@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChequeTrack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Kufi+Arabic:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0" rel="stylesheet">
+<style>
+:root{
+  --y:#FFC400; --y2:#FFD84D; --ysoft:#FFF6D6; --k:#121212; --k2:#1E1E1E; --k3:#2A2A2A;
+  --bg:#F4F4F2; --card:#fff; --tx:#2B2B2B; --mut:#7A7A7A; --line:#E7E5E0;
+  --ok:#2E9E5B; --oksoft:#E3F5EA; --warn:#D98A00; --warnsoft:#FFF1D6; --bad:#D9443A; --badsoft:#FCE6E4;
+  --info:#3A72D9; --infosoft:#E4ECFB; --vio:#7A4BD1; --viosoft:#EFE7FC;
+  --r:10px; --sh:0 2px 10px rgba(20,20,20,.07);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--tx);font-size:14px}
+.ar{font-family:'Noto Kufi Arabic',Inter,sans-serif;direction:rtl}
+.ms{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;font-size:20px;line-height:1;display:inline-block;vertical-align:middle;-webkit-font-smoothing:antialiased;font-variation-settings:'FILL' 0,'wght' 400}
+button{font-family:inherit;cursor:pointer}
+input,select,textarea{font-family:inherit;font-size:14px}
+a{color:var(--info)}
+
+/* login */
+.login{min-height:100%;display:grid;place-items:center;padding:24px;background:linear-gradient(135deg,#FFFDF5 0%,#FFF6D6 55%,#FFE69A 100%)}
+.login-card{background:#fff;border-radius:16px;box-shadow:0 20px 50px rgba(150,110,0,.15);max-width:520px;width:100%;padding:32px}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:42px;height:42px;border-radius:10px;background:var(--y);display:grid;place-items:center;color:var(--k);font-weight:800;font-size:18px;flex:none}
+.brand b{font-size:18px;letter-spacing:.2px}
+.brand small{display:block;color:var(--mut);font-size:12px}
+.demo-users{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+.demo-users button{border:1px solid var(--line);background:#fff;border-radius:10px;padding:12px;text-align:left;transition:.15s}
+.demo-users button:hover{border-color:var(--y);background:var(--ysoft)}
+.demo-users b{display:block;font-size:14px}
+.demo-users span{font-size:12px;color:var(--mut)}
+
+/* layout */
+.app{display:flex;min-height:100%}
+.side{width:250px;background:#fff;color:#444;border-right:1px solid var(--line);flex:none;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.side .brand{padding:18px 18px 14px;color:#222}
+.side .brand small{color:#9a9a9a}
+.nav-h{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#A09C92;padding:14px 22px 6px}
+.nav a{display:flex;align-items:center;gap:12px;margin:2px 12px;padding:9px 12px;border-radius:8px;color:#555;text-decoration:none;font-size:14px;cursor:pointer}
+.nav a:hover{background:#FFF8E1;color:#222}
+.nav a.on{background:var(--y);color:#1d1d1d;font-weight:600;box-shadow:0 4px 12px rgba(255,196,0,.3)}
+.nav .cnt{margin-left:auto;background:var(--bad);color:#fff;border-radius:20px;font-size:11px;padding:1px 7px}
+.nav a.on .cnt{background:#fff;color:var(--bad)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{background:#fff;height:62px;display:flex;align-items:center;gap:12px;padding:0 22px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+.top h1{font-size:18px;margin:0;font-weight:600}
+.top .sp{flex:1}
+.who{display:flex;align-items:center;gap:10px}
+.av{width:36px;height:36px;border-radius:50%;background:var(--y);color:#1d1d1d;display:grid;place-items:center;font-weight:700}
+.who small{display:block;color:var(--mut);font-size:12px}
+.burger{display:none;background:none;border:0;padding:6px}
+.content{padding:22px;max-width:1300px;width:100%}
+.proto{background:var(--ysoft);border:1px dashed var(--y);border-radius:8px;padding:8px 12px;font-size:12.5px;margin-bottom:16px;display:flex;gap:8px;align-items:center}
+
+/* cards & grid */
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--sh);padding:18px;margin-bottom:18px}
+.card h3{margin:0 0 4px;font-size:16px}
+.card .sub{color:var(--mut);font-size:12.5px;margin-bottom:14px}
+.grid{display:grid;gap:16px}
+.g4{grid-template-columns:repeat(4,1fr)} .g3{grid-template-columns:repeat(3,1fr)} .g2{grid-template-columns:repeat(2,1fr)}
+.kpi{display:flex;gap:14px;align-items:center;background:#fff;border-radius:var(--r);box-shadow:var(--sh);padding:16px}
+.kpi .ic{width:44px;height:44px;border-radius:10px;display:grid;place-items:center;flex:none}
+.kpi .v{font-size:22px;font-weight:700}
+.kpi .l{font-size:12.5px;color:var(--mut)}
+.kpi .ms{font-size:24px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.between{justify-content:space-between}
+
+/* tables */
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);font-weight:600;padding:10px;border-bottom:1px solid var(--line);background:#FAFAF8;white-space:nowrap}
+td{padding:10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.click:hover td{background:#FFFCEF;cursor:pointer}
+td.num,th.num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+tfoot td{font-weight:700;background:#FAFAF8}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap}
+.s-Pending{background:var(--warnsoft);color:var(--warn)}
+.s-Approved{background:var(--infosoft);color:var(--info)}
+.s-Written{background:var(--viosoft);color:var(--vio)}
+.s-Posted{background:#E6E6E6;color:#333}
+.s-Received{background:#E2F4F6;color:#1C8796}
+.s-Delivered{background:#FFF0C2;color:#8A6500}
+.s-Cleared{background:var(--oksoft);color:var(--ok)}
+.s-Solved{background:#E5F3EC;color:#1F7A4A;border:1px dashed #6CC093}
+/* stepper */
+.stp{display:flex;margin:12px 0 4px}
+.stp div{flex:1;text-align:center;font-size:11px;color:var(--mut);position:relative;padding-top:22px;line-height:1.25}
+.stp div:before{content:'';position:absolute;top:4px;left:50%;transform:translateX(-50%);width:14px;height:14px;border-radius:50%;background:#E3E1DB;z-index:1;box-sizing:border-box}
+.stp div:after{content:'';position:absolute;top:10px;left:-50%;width:100%;height:3px;background:#E3E1DB}
+.stp div:first-child:after{display:none}
+.stp .d:before{background:var(--y);border:3px solid #E0AC00} .stp .d:after{background:var(--y)}
+.stp .cur{color:var(--k);font-weight:700}
+.stp .xx:before{background:var(--bad);border:0}
+.mycard{border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px;cursor:pointer;transition:.15s;background:#fff}
+.mycard:hover{border-color:var(--y);box-shadow:0 4px 14px rgba(255,196,0,.18)}
+.act{background:var(--ysoft);border:1px solid #F5D46A;color:#2b2b2b;border-radius:12px;padding:14px 16px;margin-bottom:18px}
+.act h3{color:#8a6500;margin:0 0 8px;font-size:15px}
+.act .it{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #F2E2A6;flex-wrap:wrap}
+.fbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;background:#FCFBF7;border:1px solid var(--line);border-radius:10px;padding:10px}
+.fbar .in{width:auto;padding:7px 10px;font-size:13px}
+.srch{position:relative;flex:1;min-width:200px}
+.srch .ms{position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--mut);font-size:18px}
+.srch .in{width:100%!important;padding-left:32px!important}
+.pager{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.pager .in{width:auto;padding:5px 8px;font-size:12.5px}
+.ptabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.ptabs button{border:1px solid var(--line);background:#fff;border-radius:20px;padding:6px 13px;font-size:13px;font-weight:600;color:#555}
+.ptabs button.on{background:var(--y);border-color:var(--y);color:#1d1d1d}
+.ptabs b{background:#fff;border-radius:10px;padding:0 6px;margin-left:4px;font-size:11.5px}
+.ptabs button:not(.on) b{background:#F0EEE8}
+.err{background:var(--badsoft);color:var(--bad);border-radius:8px;padding:9px 12px;font-size:13px;margin-bottom:12px}
+.pol{font-size:12px;color:var(--mut);margin-top:-6px;margin-bottom:12px}
+.pol .ok{color:var(--ok)} .pol .no{color:var(--bad)}
+.chk{display:flex;align-items:center;gap:8px;font-size:13.5px;margin:6px 0 12px}
+.chk input{width:18px;height:18px;accent-color:#E0AC00}
+@media(max-width:520px){.stp div{font-size:0}.stp .cur{font-size:10px}}
+.s-Returned{background:var(--badsoft);color:var(--bad)}
+.s-Rejected{background:var(--badsoft);color:var(--bad)}
+.s-Cancelled{background:#eee;color:#888}
+.role{background:var(--ysoft);color:#7a5c00;padding:2px 8px;border-radius:6px;font-size:11.5px;font-weight:600}
+.muted{color:var(--mut)} .small{font-size:12.5px}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+
+/* forms */
+.btn{border:0;border-radius:8px;padding:9px 16px;font-weight:600;font-size:13.5px;display:inline-flex;align-items:center;gap:6px}
+.btn-y{background:var(--y);color:var(--k);box-shadow:0 3px 10px rgba(255,196,0,.35)}
+.btn-y:hover{background:var(--y2)}
+.btn-k{background:var(--ysoft);color:#6b5000;border:1px solid var(--y)}
+.btn-o{background:#fff;border:1px solid var(--line);color:var(--tx)}
+.btn-r{background:var(--bad);color:#fff}
+.btn-g{background:var(--ok);color:#fff}
+.btn-sm{padding:6px 10px;font-size:12.5px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.fg{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+.fg label{font-size:12.5px;font-weight:600;color:#555}
+.fg label .req{color:var(--bad)}
+.in{border:1px solid #D8D6D0;border-radius:8px;padding:9px 11px;background:#fff;width:100%}
+.in:focus{outline:none;border-color:var(--y);box-shadow:0 0 0 3px rgba(255,196,0,.25)}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.fgrid .full{grid-column:1/-1}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto}
+.tabs button{background:none;border:0;padding:10px 14px;font-weight:600;color:var(--mut);border-bottom:3px solid transparent;white-space:nowrap}
+.tabs button.on{color:var(--k);border-color:var(--y)}
+.note{background:#FAFAF8;border-left:3px solid var(--y);padding:10px 12px;border-radius:6px;font-size:13px;margin:10px 0}
+.warnbox{background:var(--warnsoft);border-left:3px solid var(--warn);padding:10px 12px;border-radius:6px;font-size:13px;margin:10px 0}
+.okbox{background:var(--oksoft);border-left:3px solid var(--ok);padding:10px 12px;border-radius:6px;font-size:13px;margin:10px 0}
+
+/* modal */
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;padding:16px;z-index:50}
+.modal{background:#fff;border-radius:14px;max-width:760px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.modal .mh{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff;z-index:1}
+.modal .mh h3{margin:0;font-size:17px}
+.modal .mb{padding:18px 20px}
+.modal .mf{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.x{background:none;border:0;padding:4px}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;font-size:13.5px}
+.kv dt{color:var(--mut)} .kv dd{margin:0;font-weight:500}
+.tl{list-style:none;padding:0;margin:0}
+.tl li{position:relative;padding:0 0 14px 22px;font-size:13px}
+.tl li:before{content:'';position:absolute;left:5px;top:5px;width:9px;height:9px;border-radius:50%;background:var(--y);border:2px solid #C99A00}
+.tl li:after{content:'';position:absolute;left:10px;top:16px;bottom:0;width:1px;background:var(--line)}
+.tl li:last-child:after{display:none}
+.lock{background:#FFFBEA;color:#3b3b3b;border:1px dashed #E8B800;border-radius:10px;padding:12px 14px;font-size:13px;margin-top:10px}
+.lock b{color:#8a6500}
+
+/* bars */
+.bar{display:flex;align-items:center;gap:10px;margin:8px 0;font-size:13px}
+.bar .lb{width:110px;flex:none}
+.bar .tr{flex:1;background:#F0EFEA;border-radius:6px;height:12px;overflow:hidden}
+.bar .fl{height:100%;background:var(--y);border-radius:6px}
+.bar .vl{width:130px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
+
+/* telegram */
+.tg{background:#E7EEF6;border-radius:12px;padding:14px;max-width:420px}
+.tg .msg{background:#fff;border-radius:10px 10px 10px 2px;padding:10px 12px;font-size:13px;line-height:1.5;box-shadow:0 1px 2px rgba(0,0,0,.1);white-space:pre-wrap}
+.tg .hd{font-size:12px;color:#3A72D9;font-weight:600;margin-bottom:6px}
+
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#fff;color:#222;padding:11px 18px;border-radius:10px;z-index:99;font-size:13.5px;box-shadow:0 8px 24px rgba(0,0,0,.3);border-left:4px solid var(--y)}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0}
+.steps li{counter-increment:s;position:relative;padding:2px 0 12px 36px;font-size:13.5px;line-height:1.5}
+.steps li:before{content:counter(s);position:absolute;left:0;top:0;width:24px;height:24px;border-radius:50%;background:var(--y);color:#1d1d1d;display:grid;place-items:center;font-size:12px;font-weight:700}
+code{background:#F3F2EE;padding:1px 5px;border-radius:4px;font-size:12.5px}
+.empty{padding:30px;text-align:center;color:var(--mut)}
+
+@media(max-width:1000px){.g4{grid-template-columns:repeat(2,1fr)}.g3{grid-template-columns:1fr}}
+@media(max-width:820px){
+  .side{position:fixed;left:-260px;z-index:40;transition:left .2s}
+  .side.open{left:0}
+  .burger{display:block}
+  .g2{grid-template-columns:1fr}
+  .fgrid{grid-template-columns:1fr}
+  .content{padding:14px}
+  .who .nm{display:none}
+  .kv{grid-template-columns:1fr}
+  .kv dt{margin-top:6px}
+}
+@media(max-width:480px){.g4{grid-template-columns:1fr}.demo-users{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="modal"></div>
+<div id="toast"></div>
+
+<script>
+/* =========================================================
+   Cheque Management System — interactive SAMPLE (prototype)
+   Data lives in this page only (simulates the SharePoint Excel DB).
+   ========================================================= */
+const ROLES={TOP:'Top Management',CFO:'CFO',FIN:'Finance Team',USER:'Department User'};
+const CURS=['USD','QAR','SDG'];
+const STATUS=['Pending','Approved','Posted','Received','Delivered','Cleared','Returned','Solved','Rejected','Cancelled'];
+const LABEL={Pending:'Pending CFO',Approved:'Approved',Written:'Cheque written',Posted:'Issued to requester',Received:'Received by requester',Delivered:'With beneficiary',Cleared:'Cleared',Returned:'Returned',Solved:'Solved',Rejected:'Rejected',Cancelled:'Cancelled'};
+const OPEN=['Approved','Posted','Received','Delivered','Returned'];
+
+function iso(d){return d.toISOString().slice(0,10)}
+function today(){return (DB&&DB.today)||iso(new Date())}
+function addDays(n){const d=new Date(today()+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+n);return iso(d)}
+function daysUntil(s){const a=new Date(today()+'T12:00:00'),b=new Date(s+'T12:00:00');return Math.round((b-a)/864e5)}
+function nowStamp(){const d=new Date();return iso(d)+' '+d.toTimeString().slice(0,5)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function money(n,c){const d=c==='SDG'?0:2;return Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d})+(c?' '+c:'')}
+function rnum(n){return Number(n).toLocaleString('en-US',{maximumFractionDigits:4})}
+
+/* ---------- server connection ---------- */
+async function api(path,body){
+  const opt=body===undefined?{credentials:'same-origin'}:{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'ChequeTrack'},body:JSON.stringify(body)};
+  let r;try{r=await fetch(path,opt)}catch(e){return {ok:false,error:'No connection to the server. Check your internet and try again.'}}
+  let j=null;try{j=await r.json()}catch(e){}
+  if(r.status===401&&path!=='/api/login'&&S.user){S.user=null;S.loginMsg='Your session has ended. Please sign in again.';closeM();render();return {ok:false,error:''}}
+  if(!r.ok&&!(j&&j.error))return {ok:false,error:'Server error ('+r.status+'). Please try again.'};
+  return j||{ok:false,error:'Unexpected server response.'};
+}
+async function loadState(){const j=await api('/api/state');if(j&&j.me){DB=j;S.user=j.me;return true}return false}
+let busy=false;
+async function act(action,data,okMsg){
+  if(busy)return false;busy=true;document.body.style.cursor='progress';
+  try{const j=await api('/api/act',Object.assign({action},data||{}));
+    if(!j.ok){if(j.error)toast(j.error);await loadState();render();return false}
+    await loadState();render();if(okMsg)toast(okMsg);return j}
+  finally{busy=false;document.body.style.cursor=''}
+}
+let DB=null; let S={user:null,page:'dashboard',filter:'All',repCur:null,repFrom:'',repTo:'',setTab:'alerts',brand:{},policy:null};
+function save(){}
+function audit(){}
+/* password policy */
+function pwdIssues(pw){const P=(DB&&DB.settings.policy)||S.policy||{minLen:8},r=[];
+  r.push([pw.length>=P.minLen,`At least ${P.minLen} characters`]);
+  if(P.upper)r.push([/[A-Z]/.test(pw)&&/[a-z]/.test(pw),'Upper & lower case letters']);
+  if(P.digit)r.push([/\d/.test(pw),'At least one number']);
+  if(P.special)r.push([/[^A-Za-z0-9]/.test(pw),'At least one symbol (e.g. @ # !)']);
+  return r}
+function polHint(id,out){const r=pwdIssues(document.getElementById(id).value);document.getElementById(out).innerHTML=r.map(([ok,t])=>`<span class="${ok?'ok':'no'}">${ok?'✓':'•'} ${t}</span>`).join(' &nbsp; ')}
+function isLocked(u){return u.lockedUntil&&new Date(u.lockedUntil)>new Date()}
+function pwdExpired(u){const P=DB.settings.policy;return P.expiryDays>0&&daysUntil(u.pwdChangedAt)<=-P.expiryDays}
+/* session timeout */
+let idleT;function bump(){clearTimeout(idleT);const m=(DB&&DB.settings&&DB.settings.policy.sessionMin)||S.sessionMin||30;
+  if(S.user)idleT=setTimeout(async()=>{await api('/api/logout',{reason:'idle'});S.user=null;S.forced=false;DB=null;S.loginMsg='Your session ended after '+m+' minutes of inactivity. Please sign in again.';closeM();render()},m*6e4)}
+['click','keydown'].forEach(e=>document.addEventListener(e,bump));
+function toast(m){const t=document.getElementById('toast');t.innerHTML='<div class="toast">'+esc(m)+'</div>';clearTimeout(toast.t);toast.t=setTimeout(()=>t.innerHTML='',2800)}
+
+/* ---------- lookups & FX ---------- */
+const U=id=>DB.users.find(u=>u.id==id)||{fullName:'—'};
+const D=id=>DB.departments.find(d=>d.id==id)||{nameEn:'—'};
+const B=id=>DB.beneficiaries.find(b=>b.id==id)||{nameEn:'—'};
+const R=id=>DB.rates.find(r=>r.id==id);
+function latestRate(){return [...DB.rates].sort((a,b)=>a.date<b.date?1:-1)[0]||{id:'no rate yet',date:'',QAR:1,SDG:1,setBy:'—',setAt:'—',none:true}}
+function perUsd(cur,rate){return cur==='USD'?1:rate[cur]}
+function conv(a,from,to,rate){return a/perUsd(from,rate)*perUsd(to,rate)}
+function formula(a,from,to,rate){
+  if(from===to)return 'same currency';
+  if(from==='USD')return `${money(a,'USD')} × ${rnum(rate[to])}`;
+  if(to==='USD')return `${money(a,from)} ÷ ${rnum(rate[from])}`;
+  return `${money(a,from)} ÷ ${rnum(rate[from])} × ${rnum(rate[to])}`;
+}
+/* value of a cheque in report currency: approved → locked rate of approval day; pending → latest (indicative) */
+function valueIn(c,to){
+  if(c.approval){const r=R(c.approval.fx);return {v:conv(c.approval.payAmt,c.approval.payCur,to,r),rate:r,locked:true,src:c.approval.payAmt,srcCur:c.approval.payCur}}
+  const r=latestRate();return {v:conv(c.amount,c.currency,to,r),rate:r,locked:false,src:c.amount,srcCur:c.currency}
+}
+
+/* ---------- permissions ---------- */
+const can={
+  approve:()=>S.user.role==='CFO',
+  finance:()=>['FIN','CFO'].includes(S.user.role),
+  issue:()=>['FIN','CFO'].includes(S.user.role),
+  admin:()=>['CFO','TOP'].includes(S.user.role),
+  reports:()=>['CFO','TOP','FIN'].includes(S.user.role),
+  fx:()=>['FIN','CFO'].includes(S.user.role),
+  bens:()=>['CFO','TOP','FIN'].includes(S.user.role),
+  seeAll:()=>S.user.role!=='USER'
+};
+function visibleCheques(){return can.seeAll()?DB.cheques:DB.cheques.filter(c=>c.requesterId===S.user.id)}
+
+/* ---------- navigation ---------- */
+function navItems(){
+  const pend=DB.cheques.filter(c=>c.status==='Pending').length;
+  const fin=DB.cheques.filter(c=>c.status==='Approved'||(c.status==='Delivered'&&daysUntil(c.dueDate)<=0)||c.status==='Returned').length;
+  const due=dueSoon().length;
+  const it=[
+    ['h','Main'],
+    ['dashboard','dashboard','Dashboard'],
+    ['new','add_card','New Cheque Request'],
+    ['mine','track_changes','My Cheques',myActions().length],
+  ];
+  if(can.seeAll())it.push(['requests','receipt_long','All Cheque Requests']);
+  if(can.approve())it.push(['approvals','task_alt','CFO Approvals',pend]);
+  if(can.issue())it.push(['finance','edit_note','Issue Cheques',fin]);
+  it.push(['fx','currency_exchange','Exchange Rates']);
+  if(can.seeAll())it.push(['due','event_upcoming','Due Payments',overdueList().length],['alerts','notifications_active','Telegram Alerts',due]);
+  if(can.reports())it.push(['h','Reports'],['reports','monitoring','Smart Reports']);
+  it.push(['h','Lookups']);
+  it.push(['beneficiaries','groups','Beneficiaries']);
+  if(can.admin())it.push(['h','Administration'],['departments','apartment','Departments'],['users','manage_accounts','User Management'],['settings','tune','Settings'],['audit','history','Audit Log']);
+  return it;
+}
+function go(p){S.page=p;document.querySelector('.side')?.classList.remove('open');render();window.scrollTo(0,0)}
+
+/* ---------- shell ---------- */
+function render(){
+  const root=document.getElementById('root');
+  if(!S.user){root.innerHTML=loginView();return}
+  if(S.forced){root.innerHTML=`<div class="login"><div style="width:100%;max-width:480px">${chpwd()}</div></div>`;return}
+  const titles={chpwd:'Change Password',mine:'My Cheques',dashboard:'Dashboard',new:'New Cheque Request',requests:'All Cheque Requests',approvals:'CFO Approvals',finance:'Issue Cheques',due:'Due Payments & Follow-up',alerts:'Telegram Alerts',reports:'Smart Reports',beneficiaries:'Beneficiaries',departments:'Departments',users:'User Management',settings:'Settings',fx:'Exchange Rates',audit:'Audit Log',integration:'Integration Needs — SharePoint & Telegram'};
+  root.innerHTML=`<div class="app">
+   <aside class="side">${brandHtml().replace('class="brand"','class="brand" style="padding:18px 18px 14px"')}
+    <nav class="nav">${navItems().map(i=>i[0]==='h'?`<div class="nav-h">${i[1]}</div>`:`<a class="${S.page===i[0]?'on':''}" onclick="go('${i[0]}')"><span class="ms">${i[1]}</span>${i[2]}${i[3]?`<span class="cnt">${i[3]}</span>`:''}</a>`).join('')}</nav>
+    <div style="margin-top:auto;padding:16px"><button class="btn btn-o btn-sm" style="width:100%;justify-content:center" onclick="logout()"><span class="ms">logout</span>Log out</button></div>
+   </aside>
+   <div class="main"><header class="top"><button class="burger" onclick="document.querySelector('.side').classList.toggle('open')"><span class="ms">menu</span></button><h1>${titles[S.page]}</h1><div class="sp"></div>
+     <button class="btn btn-o btn-sm" title="Change password" onclick="go('chpwd')"><span class="ms">key</span></button>
+     <div class="who"><div class="nm" style="text-align:right"><b>${esc(S.user.fullName)}</b><small>${ROLES[S.user.role]} · ${esc(D(S.user.deptId).nameEn)}</small></div><div class="av">${esc(S.user.fullName[0])}</div></div></header>
+     <div class="content">${pageView()}</div></div></div>`;
+}
+function pageView(){
+  const need={settings:can.admin,users:can.admin,departments:can.admin,audit:can.admin,approvals:can.approve,finance:can.issue,reports:can.reports,due:can.seeAll,alerts:can.seeAll,requests:can.seeAll};
+  if(need[S.page]&&!need[S.page]())S.page='dashboard';
+  return ({due,fx,chpwd,mine,dashboard,new:newReq,requests,approvals,finance,alerts,reports,beneficiaries,departments,users,settings,audit:auditView})[S.page]();
+}
+
+/* ---------- login ---------- */
+function brandHtml(sub){const b=(DB&&DB.settings)||S.brand||{};const lg=b.logo;
+  return `<div class="brand">${lg?`<img src="${esc(lg)}" alt="" style="width:42px;height:42px;object-fit:contain;border-radius:10px;background:#fff">`:'<div class="logo">C</div>'}<div><b>ChequeTrack</b><small>${esc(sub||b.company||'')}</small></div></div>`}
+function loginView(){
+  if(S.setup)return setupView();
+  return `<div class="login"><div class="login-card">
+   ${brandHtml((S.brand.company||'')+' · Cheque Request & Due-Date Management')}
+   <h2 style="margin:22px 0 4px;font-size:20px">Welcome back 👋</h2>
+   <div class="muted small" style="margin-bottom:16px">Sign in with the username and password given by your administrator.</div>
+   ${S.loginMsg?`<div class="err" id="l_err">${esc(S.loginMsg)}</div>`:'<div id="l_err"></div>'}
+   <form onsubmit="doLogin(event)"><div class="fg"><label>Username</label><input class="in" id="l_un" autocomplete="username" autocapitalize="none" required></div>
+   <div class="fg"><label>Password</label><input class="in" id="l_pw" type="password" autocomplete="current-password" required></div>
+   <button class="btn btn-y" id="l_btn" style="width:100%;justify-content:center;padding:11px"><span class="ms">login</span>Sign in</button></form>
+  </div></div>`;
+}
+function setupView(){
+  return `<div class="login"><div class="login-card">
+   ${brandHtml(S.reset?'CFO account reset':'First-time setup')}
+   <h2 style="margin:22px 0 4px;font-size:20px">${S.reset?'Create the CFO sign-in':'Set up the system'}</h2>
+   <div class="muted small" style="margin-bottom:16px">${S.reset?'The CFO account was reset from Azure. Enter the CFO\'s name, a username and a new password. Departments, users, cheques and settings are kept.':'This screen appears only once. Create the company and the first <b>CFO</b> account. The CFO then adds departments, users and today\'s exchange rates.'}</div>
+   <div id="su_err"></div>
+   <form onsubmit="doSetup(event)">
+   <div class="fg"${S.reset?' style="display:none"':''}><label>Company name</label><input class="in" id="su_co" value="${esc((S.brand&&S.brand.company)||'Equpation')}"></div>
+   <div class="fg"${S.reset?' style="display:none"':''}><label>Time zone</label><select class="in" id="su_tz"><option value="Africa/Khartoum">Sudan (Khartoum)</option><option value="Asia/Qatar">Qatar (Doha)</option><option value="Asia/Dubai">UAE (Dubai)</option><option value="Asia/Riyadh">Saudi Arabia (Riyadh)</option></select></div>
+   <div class="fg"><label>CFO full name</label><input class="in" id="su_fn" required></div>
+   <div class="fg"><label>CFO username</label><input class="in" id="su_un" autocapitalize="none" autocomplete="off" required></div>
+   <div class="fg"><label>Password</label><input class="in" type="password" id="su_pw" autocomplete="new-password" required oninput="S.policy=S.policy||{minLen:8,upper:true,digit:true,special:true};polHint('su_pw','su_hint')"></div><div class="pol" id="su_hint"></div>
+   <div class="fg"><label>Confirm password</label><input class="in" type="password" id="su_pw2" autocomplete="new-password" required></div>
+   <button class="btn btn-y" style="width:100%;justify-content:center;padding:11px"><span class="ms">rocket_launch</span>${S.reset?'Save & sign in':'Create & sign in'}</button></form>
+  </div></div>`;
+}
+async function doSetup(e){e.preventDefault();const er=m=>su_err.innerHTML=`<div class="err">${esc(m)}</div>`;
+  if(su_pw.value!==su_pw2.value)return er('Passwords do not match.');
+  const j=await api('/api/setup',{company:su_co.value.trim(),timeZone:su_tz.value,fullName:su_fn.value.trim(),username:su_un.value.trim(),password:su_pw.value});
+  if(!j.ok)return er(j.error||'Setup failed');S.setup=false;await boot()}
+function lerr(m){S.loginMsg=m;const el=document.getElementById('l_err');if(el)el.outerHTML=`<div class="err" id="l_err">${esc(m)}</div>`}
+async function doLogin(e){e.preventDefault();const b=document.getElementById('l_btn');if(b)b.disabled=true;
+  const j=await api('/api/login',{username:l_un.value.trim(),password:l_pw.value});
+  if(b)b.disabled=false;
+  if(!j.ok)return lerr(j.error||'Sign-in failed.');
+  S.loginMsg='';S.user=j.user;S.policy=j.policy;S.sessionMin=j.sessionMin;bump();
+  if(j.forced){S.forced=j.forced;render();return}
+  await loadState();landing()}
+function landing(){S.forced=false;const u=S.user;S.page=u.role==='CFO'?'approvals':u.role==='FIN'?'finance':'dashboard';render();if(u.role==='CFO'&&!tgReady())tgSetup()}
+async function logout(){await api('/api/logout',{});S.user=null;S.forced=false;DB=null;S.loginMsg='';closeM();render()}
+function chpwd(){
+  const f=S.forced,P=(DB&&DB.settings.policy)||S.policy||{};
+  return `<div class="card" style="max-width:480px;margin:0 auto"><h3>${f==='first'?'Set your own password':f==='expired'?'Your password has expired':'Change password'}</h3>
+   <div class="sub">${f==='first'?'For security you must replace the temporary password before continuing.':f==='expired'?`Passwords must be changed every ${P.expiryDays} days.`:'Choose a strong password you don\'t use elsewhere.'}</div>
+   <div id="p_err"></div>
+   <form onsubmit="savePwd(event)"><div class="fg"><label>Current password</label><input class="in" type="password" id="p_old" autocomplete="current-password" required></div>
+   <div class="fg"><label>New password</label><input class="in" type="password" id="p_new" autocomplete="new-password" required oninput="polHint('p_new','p_hint')"></div><div class="pol" id="p_hint"></div>
+   <div class="fg"><label>Confirm new password</label><input class="in" type="password" id="p_new2" autocomplete="new-password" required></div>
+   <div class="row" style="justify-content:flex-end">${f?`<button type="button" class="btn btn-o" onclick="logout()">Sign out</button>`:''}<button class="btn btn-y"><span class="ms">key</span>Save password</button></div></form></div>`;
+}
+async function savePwd(e){e.preventDefault();const pe=m=>p_err.innerHTML=`<div class="err">${esc(m)}</div>`;
+  if(p_new.value!==p_new2.value)return pe('The two new passwords do not match.');
+  const j=await api('/api/password',{old:p_old.value,new:p_new.value});
+  if(!j.ok)return pe(j.error||'Could not change the password.');
+  toast('Password updated');await loadState();landing()}
+async function boot(){
+  const j=await api('/api/me');
+  S.brand=(j&&j.brand)||{};
+  if(j&&j.brand&&j.brand.company)document.title='ChequeTrack · '+j.brand.company;
+  if(!j||j.ok===false&&j.error){document.getElementById('root').innerHTML=`<div class="login"><div class="login-card"><h3>Can't reach the server</h3><div class="sub">${esc((j&&j.error)||'')}</div><button class="btn btn-y" onclick="boot()">Try again</button></div></div>`;return}
+  S.setup=!!j.setup;S.reset=!!j.reset;
+  if(S.setup){S.user=null;render();return}
+  if(j.user){S.user=j.user;S.policy=j.policy;S.sessionMin=j.sessionMin;bump();
+    if(j.forced){S.forced=j.forced;render();return}
+    if(await loadState()){landing();return}}
+  S.user=null;render();
+}
+
+/* ---------- common bits ---------- */
+const chip=s=>`<span class="chip s-${s}">${LABEL[s]||s}</span>`;
+/* ---------- search, filters & paging (used on every list) ---------- */
+function F(key,def){S.f=S.f||{};return S.f[key]=S.f[key]||Object.assign({q:'',status:'All',field:'due',from:'',to:'',page:1,size:10,type:'All'},def||{})}
+function setF(key,prop,val,keep){const f=F(key);f[prop]=val;if(prop!=='page')f.page=1;render();if(keep){const el=document.getElementById('q_'+key);if(el){el.focus();const n=el.value.length;el.setSelectionRange(n,n)}}}
+function clearF(key){delete S.f[key];render()}
+function searchBox(key,ph){return `<div class="srch"><span class="ms">search</span><input id="q_${key}" class="in" placeholder="${ph}" value="${esc(F(key).q)}" oninput="setF('${key}','q',this.value,true)"></div>`}
+function dateRange(key,fields){const f=F(key);return `${fields?`<select class="in" onchange="setF('${key}','field',this.value)">${fields.map(([v,l])=>`<option value="${v}" ${f.field===v?'selected':''}>${l}</option>`).join('')}</select>`:''}
+  <input type="date" class="in" title="From" value="${f.from}" onchange="setF('${key}','from',this.value)"><span class="muted">→</span><input type="date" class="in" title="To" value="${f.to}" onchange="setF('${key}','to',this.value)">`}
+function clearBtn(key){const f=F(key);return (f.q||f.status!=='All'||f.type!=='All'||f.from||f.to)?`<button class="btn btn-o btn-sm" onclick="clearF('${key}')"><span class="ms">filter_alt_off</span>Clear</button>`:''}
+function inRange(f,d){if(f.from&&(!d||d<f.from))return false;if(f.to&&(!d||d>f.to))return false;return true}
+function pageOf(key,rows){const f=F(key),n=rows.length,pages=Math.max(1,Math.ceil(n/f.size));if(f.page>pages)f.page=pages;const st=(f.page-1)*f.size;
+  return {rows:rows.slice(st,st+f.size),html:n>0?`<div class="pager"><span class="muted small">Showing ${st+1}–${Math.min(n,st+f.size)} of ${n}</span><div class="row">
+  <select class="in" onchange="setF('${key}','size',+this.value)">${[10,25,50].map(x=>`<option value="${x}" ${f.size===x?'selected':''}>${x} / page</option>`).join('')}</select>
+  <button class="btn btn-o btn-sm" ${f.page<=1?'disabled':''} onclick="setF('${key}','page',${f.page-1})"><span class="ms">chevron_left</span></button><span class="small">${f.page} / ${pages}</span>
+  <button class="btn btn-o btn-sm" ${f.page>=pages?'disabled':''} onclick="setF('${key}','page',${f.page+1})"><span class="ms">chevron_right</span></button></div></div>`:''}}
+const DATEF=[['due','Due date'],['created','Request date'],['approved','Approval date']];
+function chqDate(c,fld){return fld==='due'?c.dueDate:fld==='created'?c.createdAt.slice(0,10):(c.approval?c.approval.at.slice(0,10):'')}
+function chqList(key,list,statuses,empty,renderer){
+  const f=F(key),q=f.q.trim().toLowerCase();
+  const rows=list.filter(c=>{if(f.status!=='All'&&c.status!==f.status)return false;if(!inRange(f,chqDate(c,f.field)))return false;
+    if(q){const t=[c.id,B(c.benId).nameEn,B(c.benId).nameAr,c.reason,U(c.requesterId).fullName,D(c.deptId).nameEn,c.cheque&&c.cheque.no,c.currency].join(' ').toLowerCase();if(!t.includes(q))return false}return true});
+  const p=pageOf(key,rows);S.rows=S.rows||{};S.rows[key]=rows;
+  const bar=`<div class="fbar">${searchBox(key,'Search ref, beneficiary, reason, cheque no…')}
+   ${statuses&&statuses.length>1?`<select class="in" onchange="setF('${key}','status',this.value)"><option value="All">All statuses</option>${statuses.map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${LABEL[s]}</option>`).join('')}</select>`:''}
+   ${dateRange(key,DATEF)}${clearBtn(key)}${rows.length?`<button class="btn btn-o btn-sm" title="Export to Excel (CSV)" onclick="exportCSV('cheques',S.rows['${key}'])"><span class="ms">download</span>Export</button>`:''}</div>`;
+  const msg=rows.length===0&&list.length?'No cheques match your search.':empty;
+  return bar+(renderer?renderer(p.rows,msg):chequeTable(p.rows,msg))+p.html;
+}
+const fn=s=>String(s||'').split(' ')[0];
+function stepper(c){
+  if(['Rejected','Cancelled'].includes(c.status))return `<div class="stp"><div class="d">Requested</div><div class="xx cur">${c.status}</div></div>`;
+  const req=fn(U(c.requesterId).fullName),ret=['Returned','Solved'].includes(c.status);
+  const F2=[['Pending','Requested'],['Approved','CFO approved'],['Posted',c.posted?'Issued by '+fn(c.posted.by):'Issued'],['Received','Received by '+(c.received?fn(c.received.by):req)],['Delivered','To beneficiary']];
+  if(ret)F2.push(['Returned','Returned'],['Solved','Solved']);else F2.push(['Cleared','Cleared']);
+  const i=F2.findIndex(f=>f[0]===c.status);
+  return `<div class="stp">${F2.map((f,k)=>`<div class="${k<=i?(f[0]==='Returned'?'xx':'d'):''} ${k===i?'cur':''}">${f[1]}</div>`).join('')}</div>`;
+}
+function myActions(){return DB.cheques.filter(c=>c.requesterId===S.user.id&&['Posted','Received'].includes(c.status))}
+function actionBox(){const a=myActions();if(!a.length)return '';
+  return `<div class="act"><h3><span class="ms">priority_high</span> Action needed from you</h3>${a.map(c=>`<div class="it"><div><b>${c.id}</b> · ${esc(B(c.benId).nameEn)} · ${money(c.approval.payAmt,c.approval.payCur)}<div class="small muted">${c.status==='Posted'?`${esc(fn(c.posted.by))} issued this cheque to you — confirm you received it`:'Confirm you submitted it to the beneficiary'}</div></div>
+   <button class="btn btn-y btn-sm" onclick="openCheque('${c.id}')">${c.status==='Posted'?'Confirm received':'Confirm delivered'}</button></div>`).join('')}</div>`}
+function myCards(rows,empty){return rows.length?rows.map(c=>`<div class="mycard" onclick="openCheque('${c.id}')"><div class="row between"><div><b>${c.id}</b> · ${esc(B(c.benId).nameEn)}<div class="small muted">${esc(c.reason)}</div></div>
+     <div style="text-align:right"><b>${c.approval?money(c.approval.payAmt,c.approval.payCur):money(c.amount,c.currency)}</b><div class="small muted">due ${c.dueDate}</div></div></div>${stepper(c)}</div>`).join(''):`<div class="empty">${empty}</div>`}
+function mine(){
+  const L=DB.cheques.filter(c=>c.requesterId===S.user.id);
+  return actionBox()+`<div class="card"><div class="row between"><div><h3>Follow up my cheques</h3><div class="sub" style="margin:0">Every request you raised and where it is now</div></div><button class="btn btn-y" onclick="go('new')"><span class="ms">add</span>New request</button></div><div style="height:14px"></div>
+   ${chqList('mine',L,STATUS,'You have not raised any cheque requests yet.',myCards)}</div>`;
+}
+function dueTxt(c){if(['Cleared','Rejected','Cancelled'].includes(c.status))return `<span class="muted">${c.dueDate}</span>`;const n=daysUntil(c.dueDate);
+  const col=n<0?'var(--bad)':n<=DB.settings.alertDays?'var(--warn)':'inherit';
+  return `<span style="color:${col};font-weight:${n<=DB.settings.alertDays?600:400}">${c.dueDate}</span><div class="small muted">${n<0?Math.abs(n)+' d overdue':n===0?'today':'in '+n+' d'}</div>`}
+function chequeTable(list,empty){
+  if(!list.length)return `<div class="empty">${empty||'No cheques here.'}</div>`;
+  return `<div class="tw"><table><thead><tr><th>Ref</th><th>Beneficiary</th><th>Department</th><th class="num">Requested</th><th class="num">Approved / Pay</th><th>Due date</th><th>Status</th></tr></thead><tbody>
+  ${list.map(c=>`<tr class="click" onclick="openCheque('${c.id}')"><td><b>${c.id}</b><div class="small muted">${esc(U(c.requesterId).fullName)}</div></td>
+   <td>${esc(B(c.benId).nameEn)}<div class="small muted">${esc(B(c.benId).type||'')}</div></td><td>${esc(D(c.deptId).nameEn)}</td>
+   <td class="num">${money(c.amount,c.currency)}</td><td class="num">${c.approval?money(c.approval.payAmt,c.approval.payCur)+`<div class="small muted">${c.approval.fx}</div>`:'<span class="muted">—</span>'}</td>
+   <td>${dueTxt(c)}</td><td>${chip(c.status)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+/* ---------- dashboard ---------- */
+function dashboard(){
+  const L=visibleCheques(),cur=DB.settings.reportCurrency;
+  const sum=f=>L.filter(f).reduce((s,c)=>s+valueIn(c,cur).v,0);
+  const k=(ic,bg,col,v,l)=>`<div class="kpi"><div class="ic" style="background:${bg};color:${col}"><span class="ms">${ic}</span></div><div><div class="v">${v}</div><div class="l">${l}</div></div></div>`;
+  const byStatus=STATUS.map(s=>[s,L.filter(c=>c.status===s).reduce((a,c)=>a+valueIn(c,cur).v,0)]).filter(x=>x[1]>0);
+  const mx=Math.max(...byStatus.map(x=>x[1]),1);
+  const r=latestRate();
+  if(!can.seeAll()){const my=DB.cheques.filter(c=>c.requesterId===S.user.id);
+    return actionBox()+`<div class="grid g4">
+    ${k('hourglass_top','var(--warnsoft)','var(--warn)',my.filter(c=>c.status==='Pending').length,'Waiting CFO approval')}
+    ${k('edit_note','var(--viosoft)','var(--vio)',my.filter(c=>c.status==='Approved').length,'Approved — being issued')}
+    ${k('front_hand','var(--ysoft)','#9a7400',my.filter(c=>['Posted','Received'].includes(c.status)).length,'With me — to deliver')}
+    ${k('check_circle','var(--oksoft)','var(--ok)',my.filter(c=>['Delivered','Cleared','Solved'].includes(c.status)).length,'Delivered / cleared')}</div>
+    <div class="card" style="margin-top:18px"><div class="row between"><h3>Latest requests</h3><button class="btn btn-o btn-sm" onclick="go('mine')">See all</button></div>
+    ${my.slice(0,3).map(c=>`<div class="mycard" style="margin-top:12px" onclick="openCheque('${c.id}')"><div class="row between"><b>${c.id} · ${esc(B(c.benId).nameEn)}</b>${chip(c.status)}</div>${stepper(c)}</div>`).join('')||'<div class="empty">No requests yet.</div>'}</div>`}
+  return actionBox()+`<div class="grid g4">
+    ${k('hourglass_top','var(--warnsoft)','var(--warn)',L.filter(c=>c.status==='Pending').length,'Waiting CFO approval')}
+    ${k('edit_note','var(--viosoft)','var(--vio)',L.filter(c=>c.status==='Approved').length,'Approved — waiting to be issued')}
+    ${k('alarm','var(--badsoft)','var(--bad)',L.filter(c=>OPEN.includes(c.status)&&daysUntil(c.dueDate)<=DB.settings.alertDays).length,`Due within ${DB.settings.alertDays} days / overdue`)}
+    ${k('account_balance_wallet','var(--ysoft)','#9a7400',money(sum(c=>OPEN.includes(c.status)),cur),'Open commitments ('+cur+')')}
+  </div>
+  <div class="grid g2" style="margin-top:18px">
+   <div class="card"><h3>Upcoming due dates</h3><div class="sub">Open cheques, soonest first</div>
+     ${chequeTable(L.filter(c=>OPEN.includes(c.status)).sort((a,b)=>a.dueDate<b.dueDate?-1:1).slice(0,5),'Nothing open.')}</div>
+   <div class="card"><h3>Value by status</h3><div class="sub">Converted to ${cur} at each cheque's locked approval-day rate</div>
+     ${byStatus.map(([s,v])=>`<div class="bar"><div class="lb">${chip(s)}</div><div class="tr"><div class="fl" style="width:${v/mx*100}%"></div></div><div class="vl">${money(v,cur)}</div></div>`).join('')||'<div class="empty">No data</div>'}
+     <div class="note" style="margin-top:16px"><b>Today's rate (${r.id}):</b> 1 USD = ${rnum(r.QAR)} QAR = ${rnum(r.SDG)} SDG <span class="muted">· set by ${esc(r.setBy)} ${r.setAt}</span>
+     ${r.date!==today()?`<div style="color:var(--bad);margin-top:4px">⚠ Today's rate has not been entered yet — last rate is from ${r.date}.</div>`:''}</div>
+   </div></div>
+  <div class="card"><h3>Recent activity</h3><div class="sub">Every action is logged with the user and time</div>
+   <div class="tw"><table><tbody>${DB.audit.slice(0,6).map(a=>`<tr><td class="small muted" style="white-space:nowrap">${a.at}</td><td><b>${esc(a.user)}</b></td><td>${esc(a.action)}</td><td class="mono">${esc(a.entity)}</td><td class="small">${esc(a.details)}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+
+/* ---------- new request ---------- */
+function newReq(){
+  const r=latestRate();
+  return `<div class="card" style="max-width:820px"><h3>Issue a cheque request</h3><div class="sub">Requested by <b>${esc(S.user.fullName)}</b> · ${esc(D(S.user.deptId).nameEn)} department. It goes to the CFO for approval. Follow it up anytime under <b>My Cheques</b>.</div>
+  <form onsubmit="submitReq(event)"><div class="fgrid">
+   <div class="fg full"><label>Beneficiary <span class="req">*</span></label><div class="row" style="flex-wrap:nowrap">
+     <select class="in" id="f_ben" required><option value="">— Select supplier / customer / employee —</option>
+     ${['Supplier','Customer','Employee','Other'].map(t=>{const l=DB.beneficiaries.filter(b=>b.type===t);return l.length?`<optgroup label="${t}s">${l.map(b=>`<option value="${b.id}">${esc(b.nameEn)}${b.nameAr?' — '+esc(b.nameAr):''}</option>`).join('')}</optgroup>`:''}).join('')}
+     </select><button type="button" class="btn btn-o" onclick="benModal(null,true)" title="Add beneficiary"><span class="ms">person_add</span></button></div></div>
+   <div class="fg"><label>Amount <span class="req">*</span></label><input class="in" id="f_amt" type="number" min="0.01" step="0.01" required></div>
+   <div class="fg"><label>Currency <span class="req">*</span></label><select class="in" id="f_cur">${CURS.map(c=>`<option>${c}</option>`).join('')}</select></div>
+   <div class="fg"><label>Due date <span class="req">*</span></label><input class="in" id="f_due" type="date" required min="${today()}"></div>
+   <div class="fg"><label>Department</label><input class="in" value="${esc(D(S.user.deptId).nameEn)}" disabled></div>
+   <div class="fg full"><label>Reason / description <span class="req">*</span></label><textarea class="in" id="f_rsn" rows="3" required></textarea></div>
+  </div>
+  <div class="row" style="justify-content:flex-end"><button type="reset" class="btn btn-o">Clear</button><button class="btn btn-y"><span class="ms">send</span>Submit request</button></div></form></div>`;
+}
+/* ---------- lists ---------- */
+function requests(){
+  return `<div class="card"><h3>All cheque requests</h3><div class="sub">Search, filter by status and dates, tap a row to open it</div>${chqList('all',DB.cheques,STATUS,'No cheques yet.')}</div>`;
+}
+function approvals(){return `<div class="card"><h3>Waiting for your approval</h3><div class="sub">On approval you choose the payment currency; the system converts with today's rate and locks that rate with the cheque.</div>${chqList('appr',DB.cheques.filter(c=>c.status==='Pending'),null,'No pending requests 🎉')}</div>`}
+const FINT=[['issue','To issue',['Approved'],'CFO-approved — write the cheque details and issue it to the requester'],['wait','With requesters',['Posted','Received'],'Waiting the requester to confirm receipt and delivery'],['close','To clear / return',['Delivered'],'With the beneficiary — once the due date comes, mark cleared or returned'],['ret','Returned',['Returned'],'Returned cheques — mark as solved once settled'],['all','All',STATUS,'Every cheque']];
+function finance(){const t=S.finTab||'issue',T=FINT.find(x=>x[0]===t);
+  return `<div class="card"><div class="ptabs">${FINT.map(([k,l,st])=>`<button class="${t===k?'on':''}" onclick="S.finTab='${k}';render()">${l}${k!=='all'?`<b>${DB.cheques.filter(c=>st.includes(c.status)).length}</b>`:''}</button>`).join('')}</div>
+  <div class="sub">${T[3]}</div>${chqList('fin_'+t,DB.cheques.filter(c=>T[2].includes(c.status)),T[2],'Nothing here right now.')}</div>`}
+
+/* ---------- cheque detail modal ---------- */
+function modal(html){document.getElementById('modal').innerHTML=`<div class="ov" onclick="if(event.target===this)closeM()"><div class="modal">${html}</div></div>`}
+function closeM(){document.getElementById('modal').innerHTML=''}
+function openCheque(id){
+  const c=DB.cheques.find(x=>x.id===id);if(!c){toast('This cheque is not available to you');return}
+  const b=B(c.benId),r=latestRate();
+  if(!can.seeAll()&&c.requesterId!==S.user.id){toast('You can only view your own cheques');return}
+  const tl=[[`Requested by <b>${esc(U(c.requesterId).fullName)}</b>`,c.createdAt]];
+  if(c.rejected)tl.push([`Rejected by <b>${esc(c.rejected.by)}</b> — ${esc(c.rejected.reason)}`,c.rejected.at]);
+  if(c.approval)tl.push([`Approved by <b>${esc(c.approval.by)}</b> — pay ${money(c.approval.payAmt,c.approval.payCur)} · rate <span class="mono">${c.approval.fx}</span> locked`,c.approval.at]);
+  if(c.posted)tl.push([`Cheque #${esc(c.cheque.no)} (${esc(c.cheque.bank)}) written &amp; issued to requester by <b>${esc(c.posted.by)}</b>`,c.posted.at]);
+  if(c.received)tl.push([`Receipt confirmed by <b>${esc(c.received.by)}</b>`,c.received.at]);
+  if(c.delivered)tl.push([`Delivered to beneficiary by <b>${esc(c.delivered.by)}</b>${c.delivered.to?' · handed to '+esc(c.delivered.to):''}`,c.delivered.at]);
+  if(c.closed)tl.push([`${c.closed.status} — by <b>${esc(c.closed.by)}</b>${c.closed.reason?' · '+esc(c.closed.reason):''}`,c.closed.at]);
+  if(c.solved)tl.push([`Solved by <b>${esc(c.solved.by)}</b> · ${esc(c.solved.note)}`,c.solved.at]);
+  if(c.status==='Cancelled')tl.push(['Cancelled','']);
+  let act='',extra='';
+  if(c.status==='Pending'&&can.approve()){
+    extra=`<div class="card" style="box-shadow:none;border:1px solid var(--line);margin:16px 0 0"><h3>CFO decision</h3><div class="sub">Original request: <b>${money(c.amount,c.currency)}</b>. Choose the currency to pay with — converted at today's rate.</div>
+     ${r.date!==today()?`<div class="warnbox">⚠ No rate entered for today. Using last rate ${r.id} (${r.date}). Ask Finance to enter today's rate on the Exchange Rates page.</div>`:''}
+     <div class="fgrid"><div class="fg"><label>Pay in currency</label><select class="in" id="a_cur" onchange="apPrev('${c.id}')">${CURS.map(x=>`<option ${x===c.currency?'selected':''}>${x}</option>`).join('')}</select></div>
+     <div class="fg"><label>Amount to pay</label><input class="in" id="a_amt" disabled></div></div>
+     <div class="lock" id="a_lock"></div>
+     <div class="fg" style="margin-top:12px"><label>Rejection reason (only if rejecting)</label><input class="in" id="a_rej" placeholder="Required to reject"></div></div>`;
+    act=`<button class="btn btn-r" onclick="reject('${c.id}')"><span class="ms">block</span>Reject</button><button class="btn btn-g" onclick="approve('${c.id}')"><span class="ms">verified</span>Approve & lock rate</button>`;
+  }
+  if(c.status==='Pending'&&c.requesterId===S.user.id&&!can.approve())act=`<button class="btn btn-o" onclick="cancelReq('${c.id}')">Cancel my request</button>`;
+  if(c.status==='Approved'&&can.issue()){
+    extra=`<div class="card" style="box-shadow:none;border:1px solid var(--line);margin:16px 0 0"><h3>Issue cheque</h3><div class="sub">Write the cheque details, then issue it to <b>${esc(U(c.requesterId).fullName)}</b></div><div class="fgrid">
+     <div class="fg"><label>Cheque number <span class="req">*</span></label><input class="in" id="w_no"></div>
+     <div class="fg"><label>Bank <span class="req">*</span></label><input class="in" id="w_bank" list="banks"><datalist id="banks">${(DB.settings.banks||[]).map(x=>`<option>${esc(x)}</option>`).join('')}</datalist></div>
+     <div class="fg"><label>Cheque date <span class="req">*</span></label><input class="in" type="date" id="w_date" value="${c.dueDate}"></div>
+     <div class="fg"><label>Amount on cheque</label><input class="in" disabled value="${money(c.approval.payAmt,c.approval.payCur)}"></div></div></div>`;
+    act=`<button class="btn btn-y" onclick="issueChq('${c.id}')"><span class="ms">outbox</span>Issue cheque</button>`;
+  }
+  const mineC=c.requesterId===S.user.id;
+  if(c.status==='Posted'){
+    if(mineC){extra=`<div class="okbox" style="margin-top:16px"><b>${esc(fn(c.posted.by))} issued this cheque to you.</b> Confirm once you have it in hand.</div>`;
+      act=`<button class="btn btn-y" onclick="confirmRecv('${c.id}')"><span class="ms">inventory</span>I received the cheque</button>`}
+    else extra=`<div class="note">Waiting for <b>${esc(U(c.requesterId).fullName)}</b> to confirm receipt.</div>`;
+  }
+  if(c.status==='Received'){
+    if(mineC){extra=`<div class="card" style="box-shadow:none;border:1px solid var(--line);margin:16px 0 0"><h3>Submit to beneficiary</h3><div class="sub">Confirm after you hand the cheque to <b>${esc(b.nameEn)}</b></div>
+      <div class="fgrid"><div class="fg"><label>Handed to (person name)</label><input class="in" id="d_to" value="${esc(b.contact)}" placeholder="Who received it"></div>
+      <div class="fg"><label>Date</label><input class="in" type="date" id="d_dt" value="${today()}" max="${today()}"></div></div></div>`;
+      act=`<button class="btn btn-y" onclick="confirmDeliv('${c.id}')"><span class="ms">handshake</span>Confirm delivered to beneficiary</button>`}
+    else extra=`<div class="note">With <b>${esc(U(c.requesterId).fullName)}</b> — waiting confirmation of delivery to the beneficiary.</div>`;
+  }
+  if(c.status==='Delivered'&&can.finance()){
+    if(daysUntil(c.dueDate)>0){extra=`<div class="note">With the beneficiary. It can be marked <b>cleared</b> or <b>returned</b> from the due date (${c.dueDate}, in ${daysUntil(c.dueDate)} d).</div>`}
+    else{extra=`<div class="card" style="box-shadow:none;border:1px solid var(--line);margin:16px 0 0"><h3>Due date reached — clear or return</h3><div class="sub">Did the bank pay the cheque?</div>
+      <div class="fg"><label>Return reason (only if returned)</label><input class="in" id="c_rsn" placeholder="e.g. insufficient funds, signature mismatch"></div></div>`;
+      act=`<button class="btn btn-r" onclick="closeChq('${c.id}','Returned')"><span class="ms">undo</span>Returned</button><button class="btn btn-g" onclick="closeChq('${c.id}','Cleared')"><span class="ms">check_circle</span>Cleared</button>`}
+  }
+  if(c.status==='Returned'&&can.finance()){
+    extra=`<div class="card" style="box-shadow:none;border:1px solid var(--line);margin:16px 0 0"><h3>Resolve returned cheque</h3><div class="sub">When the issue is settled, mark it as solved.</div>
+      <div class="fg"><label>How was it solved? <span class="req">*</span></label><input class="in" id="s_note" placeholder="e.g. paid in cash, replaced by cheque #000470"></div></div>`;
+    act=`<button class="btn btn-g" onclick="solveChq('${c.id}')"><span class="ms">task_alt</span>Mark as solved</button>`;
+  }
+  const lockInfo=c.approval?(()=>{const rr=R(c.approval.fx);return `<div class="lock"><span class="ms" style="color:var(--y)">lock</span> Locked rate <b>${rr.id}</b> (${rr.date}): 1 USD = ${rnum(rr.QAR)} QAR = ${rnum(rr.SDG)} SDG. All reports use this rate for this cheque.</div>`})():'';
+  modal(`<div class="mh"><h3>${c.id} ${chip(c.status)}</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div>
+   <div class="mb">${stepper(c)}<div style="height:12px"></div><div class="grid g2"><dl class="kv">
+     <dt>Beneficiary</dt><dd>${esc(b.nameEn)}${b.nameAr?`<div class="ar small">${esc(b.nameAr)}</div>`:''}</dd>
+     <dt>Type / contact</dt><dd>${esc(b.type)}${b.contact?' · '+esc(b.contact):''}${b.phone?'<div class="small muted">'+esc(b.phone)+'</div>':''}</dd>
+     <dt>Requested amount</dt><dd style="font-size:16px">${money(c.amount,c.currency)}</dd>
+     <dt>Due date</dt><dd>${dueTxt(c)}</dd>
+     <dt>Department</dt><dd>${esc(D(c.deptId).nameEn)}</dd>
+     <dt>Reason</dt><dd>${esc(c.reason)}</dd>
+     ${c.cheque?`<dt>Cheque</dt><dd>#${esc(c.cheque.no)} · ${esc(c.cheque.bank)} · dated ${c.cheque.date}</dd>`:''}
+    </dl><div><div class="small muted" style="margin-bottom:8px;font-weight:600">HISTORY (who did what)</div><ul class="tl">${tl.map(t=>`<li>${t[0]}<div class="small muted">${t[1]}</div></li>`).join('')}</ul></div></div>
+    ${lockInfo}${extra}</div>
+   <div class="mf"><button class="btn btn-o" onclick="closeM()">Close</button>${act}</div>`);
+  if(c.status==='Pending'&&can.approve())apPrev(c.id);
+}
+function apPrev(id){const c=DB.cheques.find(x=>x.id===id),r=latestRate(),to=a_cur.value,v=conv(c.amount,c.currency,to,r);
+  a_amt.value=money(v,to);
+  a_lock.innerHTML=`<span class="ms" style="color:var(--y)">lock</span> Will lock <b>${r.id}</b>: 1 USD = ${rnum(r.QAR)} QAR = ${rnum(r.SDG)} SDG<div class="small" style="color:#7a7a7a;margin-top:4px">${c.currency===to?'Same currency — no conversion':formula(c.amount,c.currency,to,r)+' = '+money(v,to)}</div>`}
+/* ---------- alerts ---------- */
+/* ---------- Telegram: same stages as the cheque cycle ---------- */
+function tgGuideHtml(){return `<ol class="steps"><li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code> and follow the steps. Copy the <b>bot token</b> it gives you.</li>
+ <li>Create a <b>channel</b> (e.g. “Company Cheque Alerts”) and add the managers and Finance team.</li>
+ <li>Channel → Administrators → <b>Add admin</b> → choose your bot → allow <b>Post messages</b>.</li>
+ <li>Channel ID: a public channel is <code>@channelname</code>. A private one starts with <code>-100…</code></li></ol>`}
+function tgGuide(){modal(`<div class="mh"><h3>Getting the Telegram details</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div><div class="mb">${tgGuideHtml()}</div><div class="mf"><button class="btn btn-y" onclick="closeM()">Got it</button></div>`)}
+function tgSetup(){const s=DB.settings;
+  modal(`<div class="mh"><h3><span class="ms">notifications_active</span> Connect Telegram alerts</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div><div class="mb">
+   <div class="sub">Telegram alerts aren't set up yet. As CFO, only you can connect them. It takes about 3 minutes.</div>${tgGuideHtml()}
+   <div id="tg_err"></div><div class="fg"><label>Channel (@name or -100… ID) <span class="req">*</span></label><input class="in" id="ts_ch" value="${esc(s.telegramChannel)}" placeholder="@company_cheque_alerts"></div>
+   <div class="fg"><label>Bot token <span class="req">*</span></label><input class="in mono" type="password" id="ts_tk" placeholder="123456789:AA…"></div></div>
+   <div class="mf"><button class="btn btn-o" onclick="closeM()">Remind me later</button><button class="btn btn-y" onclick="tgSave()"><span class="ms">link</span>Connect &amp; send test</button></div>`)}
+const TG_EVENTS=[['approved','✅ Approved by CFO'],['issued','🧾 Cheque issued to requester'],['received','📥 Received by requester'],['delivered','🤝 Delivered to beneficiary'],['cleared','💚 Cleared'],['returned','🔴 Returned'],['solved','✔️ Returned cheque solved'],['rejected','⛔ Rejected']];
+function amtOf(c){return c.approval?money(c.approval.payAmt,c.approval.payCur):money(c.amount,c.currency)}
+function dueWord(c){const n=daysUntil(c.dueDate);return n<0?Math.abs(n)+'d overdue':n===0?'due TODAY':'due in '+n+'d'}
+function tgGroups(){const w=DB.settings.alertDays,inW=c=>daysUntil(c.dueDate)<=w;
+  return [
+   ['🔴 RETURNED — to be solved',DB.cheques.filter(c=>c.status==='Returned'),c=>c.closed&&c.closed.reason?'reason: '+c.closed.reason:''],
+   ['⏰ DUE / OVERDUE — clear or return',DB.cheques.filter(c=>c.status==='Delivered'&&daysUntil(c.dueDate)<=0),()=>'' ],
+   ['🏦 WITH BENEFICIARY — will submit to bank',DB.cheques.filter(c=>c.status==='Delivered'&&daysUntil(c.dueDate)>0&&inW(c)),c=>c.delivered&&c.delivered.to?'handed to '+c.delivered.to:''],
+   ['📦 NOT RECEIVED BY BENEFICIARY yet',DB.cheques.filter(c=>['Posted','Received'].includes(c.status)&&inW(c)),c=>c.status==='Posted'?'waiting '+fn(U(c.requesterId).fullName)+' to confirm receipt':'with '+fn(U(c.requesterId).fullName)+' — not delivered'],
+   ['🟡 APPROVED — not issued yet',DB.cheques.filter(c=>c.status==='Approved'&&inW(c)),()=>'']
+  ].filter(g=>g[1].length)}
+function dueSoon(){return tgGroups().flatMap(g=>g[1])}
+function tgText(){const s=DB.settings,G=tgGroups();
+  if(!G.length)return 'No alerts today.';
+  return `🔔 <b>Daily cheque alert</b> — ${today()}\n(alert window: ${s.alertDays} days)\n`+G.map(([h,l,x])=>`\n<b>${h}</b> (${l.length})\n`+l.sort((a,b)=>a.dueDate<b.dueDate?-1:1).map(c=>{const e=x(c);return `• ${c.id} · ${B(c.benId).nameEn}\n   ${amtOf(c)} · ${dueWord(c)}${c.cheque?' · #'+c.cheque.no:''}${e?'\n   '+e:''}`}).join('\n')).join('\n')+`\n\nChequeTrack · ${s.company}`;
+}
+function tgHtml(t){return esc(t).replace(/&lt;b&gt;/g,'<b>').replace(/&lt;\/b&gt;/g,'</b>')}
+function alerts(){
+  const s=DB.settings,G=tgGroups(),feed=DB.tgFeed||[];
+  return (tgReady()?'':`<div class="warnbox"><b>Telegram is not set up yet.</b> ${S.user.role==='CFO'?`<a href="#" onclick="tgSetup();return false">Set it up now</a>`:'Ask the CFO to connect it in Settings.'} Messages below are a preview only.</div>`)+`<div class="grid g4">${G.map(([h,l])=>`<div class="kpi"><div><div class="l">${h.split(' — ')[0]}</div><div class="v" style="font-size:20px">${l.length}</div><div class="l">${h.split(' — ')[1]||''}</div></div></div>`).join('')}</div>
+  <div class="grid g2" style="margin-top:18px"><div class="card"><h3>Daily digest</h3><div class="sub">Sent every day at ${s.alertTime} to <b>${esc(s.telegramChannel)}</b>, grouped by stage</div>
+   <div class="tg"><div class="hd">ChequeTrack Bot · ${esc(s.telegramChannel)}</div><div class="msg">${tgHtml(tgText())}</div></div>
+   <div class="row" style="margin-top:14px"><button class="btn btn-y" ${G.length&&tgReady()?'':'disabled'} onclick="sendAlert()"><span class="ms">send</span>Send now</button></div>
+   ${DB.alerts.length?`<div style="margin-top:12px"><b class="small">Digest log</b>${DB.alerts.slice(0,5).map(a=>`<div class="small muted">${a.at} · ${a.count} cheque(s) → ${esc(a.ch)} · by ${esc(a.by)}</div>`).join('')}</div>`:''}</div>
+  <div class="card"><h3>Instant stage messages</h3><div class="sub">Posted to the channel the moment a cheque changes stage. Choose which stages in Settings → Alerts &amp; Telegram.</div>
+   <div class="tg" style="max-height:520px;overflow:auto">${feed.length?feed.map(f=>`<div class="msg" style="margin-bottom:8px">${f.text}${f.sent===false?`<div class="small" style="color:var(--bad)">Not delivered: ${esc(f.error)}</div>`:''}<div class="small muted" style="text-align:right">${f.at.slice(11)} · ${f.at.slice(0,10)}</div></div>`).join(''):'<div class="msg">No stage messages yet — approve, issue, deliver, clear or return a cheque to see them here.</div>'}</div></div></div>
+  `;
+}
+/* ---------- due payments ---------- */
+function overdueList(){return DB.cheques.filter(c=>OPEN.includes(c.status)&&c.status!=='Returned'&&daysUntil(c.dueDate)<=0).sort((a,b)=>a.dueDate<b.dueDate?-1:1)}
+function dueTable(rows,empty,od){
+  if(!rows.length)return `<div class="empty">${empty}</div>`;
+  return `<div class="tw"><table><thead><tr><th>Ref</th><th>Beneficiary</th><th class="num">Amount</th><th>Due date</th><th>Status</th><th></th></tr></thead><tbody>
+  ${rows.map(c=>{const amt=c.approval?money(c.approval.payAmt,c.approval.payCur):money(c.amount,c.currency),ready=c.status==='Delivered'&&daysUntil(c.dueDate)<=0;
+   return `<tr class="click" onclick="openCheque('${c.id}')"${od?' style="background:#FFF7F6"':''}><td><b>${c.id}</b><div class="small muted">${esc(fn(U(c.requesterId).fullName))} · ${esc(D(c.deptId).nameEn)}</div></td>
+   <td>${esc(B(c.benId).nameEn)}${c.cheque?`<div class="small muted">#${esc(c.cheque.no)} · ${esc(c.cheque.bank)}</div>`:''}</td><td class="num"><b>${amt}</b></td><td>${dueTxt(c)}</td><td>${chip(c.status)}</td>
+   <td style="white-space:nowrap">${ready&&can.finance()?`<button class="btn btn-y btn-sm"><span class="ms">rule</span>Clear / return</button>`:''}</td></tr>`}).join('')}</tbody></table></div>`;
+}
+function due(){
+  const key='due',f=F(key,{from:today(),to:addDays(30),status:'All'}),cur=DB.settings.reportCurrency,q=f.q.trim().toLowerCase();
+  const match=c=>(f.status==='All'||c.status===f.status)&&(!q||[c.id,B(c.benId).nameEn,B(c.benId).nameAr,c.reason,c.cheque&&c.cheque.no,U(c.requesterId).fullName].join(' ').toLowerCase().includes(q));
+  const od=overdueList().filter(match);
+  const inR=DB.cheques.filter(c=>OPEN.includes(c.status)&&c.status!=='Returned'&&daysUntil(c.dueDate)>0&&inRange(f,c.dueDate)&&match(c)).sort((a,b)=>a.dueDate<b.dueDate?-1:1);
+  const ret=DB.cheques.filter(c=>c.status==='Returned'&&match(c));
+  const p=pageOf(key,inR);
+  const tot=l=>l.reduce((s,c)=>s+valueIn(c,cur).v,0);
+  const byCur=l=>{const m={};l.forEach(c=>{const k=c.approval?c.approval.payCur:c.currency;m[k]=(m[k]||0)+(c.approval?c.approval.payAmt:c.amount)});return Object.entries(m).map(([k,v])=>money(v,k)).join(' · ')||'—'};
+  const quick=(n,l)=>`<button class="btn btn-o btn-sm" onclick="S.f.due.from=today();S.f.due.to=addDays(${n});S.f.due.page=1;render()">${l}</button>`;
+  const k=(ic,bg,col,v,l,s)=>`<div class="kpi"><div class="ic" style="background:${bg};color:${col}"><span class="ms">${ic}</span></div><div><div class="v" style="font-size:19px">${v}</div><div class="l">${l}</div>${s?`<div class="l">${s}</div>`:''}</div></div>`;
+  const wk=DB.cheques.filter(c=>OPEN.includes(c.status)&&c.status!=='Returned'&&daysUntil(c.dueDate)>0&&daysUntil(c.dueDate)<=7);
+  return `<div class="grid g4">
+   ${k('error','var(--badsoft)','var(--bad)',od.length,'Due today / overdue',money(tot(od),cur))}
+   ${k('event_upcoming','var(--ysoft)','#9a7400',inR.length,`Due ${f.from||'…'} → ${f.to||'…'}`,money(tot(inR),cur))}
+   ${k('date_range','var(--infosoft)','var(--info)',wk.length,'Due in next 7 days',money(tot(wk),cur))}
+   ${k('undo','var(--badsoft)','var(--bad)',DB.cheques.filter(c=>c.status==='Returned').length,'Returned — to solve',money(tot(DB.cheques.filter(c=>c.status==='Returned')),cur))}</div>
+  <div class="card" style="margin-top:18px"><div class="fbar" style="margin:0">${searchBox(key,'Search ref, beneficiary, cheque no…')}
+   <select class="in" onchange="setF('${key}','status',this.value)"><option value="All">All open statuses</option>${OPEN.filter(s=>s!=='Returned').map(s=>`<option value="${s}" ${f.status===s?'selected':''}>${LABEL[s]}</option>`).join('')}</select>
+   ${dateRange(key)}${quick(7,'7 days')}${quick(30,'30 days')}${quick(90,'90 days')}</div></div>
+  <div class="card" style="border-left:4px solid var(--bad)"><h3 style="color:var(--bad)"><span class="ms">error</span> Due today / overdue — clear or return</h3>
+   <div class="sub">The due date has come. Finance or the CFO marks each one <b>cleared</b> or <b>returned</b>. Total: <b>${byCur(od)}</b></div>
+   ${dueTable(od,'Nothing due or overdue 🎉',true)}</div>
+  <div class="card"><h3>Upcoming due payments</h3><div class="sub">Open cheques in the selected range · Total: <b>${byCur(inR)}</b> ≈ <b>${money(tot(inR),cur)}</b> at locked rates</div>
+   ${dueTable(p.rows,'No payments due in this range.')}${p.html}</div>
+  <div class="card"><h3>Returned — waiting to be solved</h3><div class="sub">Open a cheque and mark it <b>solved</b> once settled</div>${dueTable(ret,'No open returned cheques.')}</div>`;
+}
+
+/* ---------- reports ---------- */
+function reports(){
+  const cur=S.repCur||DB.settings.reportCurrency;
+  let L=DB.cheques.filter(c=>!['Rejected','Cancelled'].includes(c.status));
+  if(S.repSt&&S.repSt!=='All')L=L.filter(c=>c.status===S.repSt);
+  if(S.repFrom)L=L.filter(c=>(c.approval?c.approval.at.slice(0,10):c.createdAt.slice(0,10))>=S.repFrom);
+  if(S.repTo)L=L.filter(c=>(c.approval?c.approval.at.slice(0,10):c.createdAt.slice(0,10))<=S.repTo);
+  const appr=L.filter(c=>c.approval).sort((a,b)=>a.approval.at<b.approval.at?-1:1);
+  const tot=appr.reduce((s,c)=>s+valueIn(c,cur).v,0);
+  const grp=(keyF,nameF)=>{const m={};L.forEach(c=>{const k=keyF(c);m[k]=m[k]||{n:nameF(c),cnt:0,v:0,open:0};m[k].cnt++;const v=valueIn(c,cur).v;m[k].v+=v;if(OPEN.includes(c.status))m[k].open+=v});return Object.values(m).sort((a,b)=>b.v-a.v)};
+  const gt=(rows,title,sub)=>{const mx=Math.max(...rows.map(r=>r.v),1);return `<div class="card"><h3>${title}</h3><div class="sub">${sub}</div><div class="tw"><table><thead><tr><th>Name</th><th class="num">#</th><th class="num">Total ${cur}</th><th class="num">Open ${cur}</th><th style="width:30%"></th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${esc(r.n)}</td><td class="num">${r.cnt}</td><td class="num">${money(r.v,cur)}</td><td class="num">${money(r.open,cur)}</td><td><div class="tr" style="background:#F0EFEA;border-radius:6px;height:10px"><div style="width:${r.v/mx*100}%;height:100%;background:var(--y);border-radius:6px"></div></div></td></tr>`).join('')}</tbody></table></div></div>`};
+  const open=DB.cheques.filter(c=>OPEN.includes(c.status));
+  const buckets=[['Overdue',c=>daysUntil(c.dueDate)<0],['0–7 days',c=>{const n=daysUntil(c.dueDate);return n>=0&&n<=7}],['8–30 days',c=>{const n=daysUntil(c.dueDate);return n>7&&n<=30}],['31+ days',c=>daysUntil(c.dueDate)>30]];
+  return `<div class="card"><div class="row between"><div><h3>Report settings</h3><div class="sub" style="margin:0">Every cheque is converted with the exchange rate <b>locked on its approval day</b>, not today's rate.</div></div>
+    <div class="row"><label class="small"><b>Report currency</b></label><select class="in" style="width:auto" onchange="S.repCur=this.value;render()">${CURS.map(c=>`<option ${c===cur?'selected':''}>${c}</option>`).join('')}</select>
+    <select class="in" style="width:auto" onchange="S.repSt=this.value;render()"><option value="All">All statuses</option>${STATUS.filter(x=>!['Rejected','Cancelled'].includes(x)).map(x=>`<option value="${x}" ${S.repSt===x?'selected':''}>${LABEL[x]}</option>`).join('')}</select>
+    <input class="in" type="date" style="width:auto" value="${S.repFrom}" onchange="S.repFrom=this.value;render()"><span class="muted">→</span><input class="in" type="date" style="width:auto" value="${S.repTo}" onchange="S.repTo=this.value;render()"></div></div></div>
+
+  <div class="card"><h3>Conversion register — ${cur}</h3><div class="sub">Approved cheques by approval day, with the rate used. Total: <b>${money(tot,cur)}</b></div>
+   <div class="tw"><table><thead><tr><th>Approval day</th><th>Ref</th><th>Beneficiary</th><th class="num">Paid amount</th><th>Rate ID</th><th class="num">1 USD =</th><th>Calculation</th><th class="num">${cur}</th></tr></thead><tbody>
+   ${appr.map(c=>{const x=valueIn(c,cur);return `<tr class="click" onclick="openCheque('${c.id}')"><td>${c.approval.at.slice(0,10)}</td><td><b>${c.id}</b></td><td>${esc(B(c.benId).nameEn)}</td><td class="num">${money(x.src,x.srcCur)}</td><td class="mono">${x.rate.id}</td>
+     <td class="num small">${rnum(x.rate.QAR)} QAR<br>${rnum(x.rate.SDG)} SDG</td><td class="small muted">${formula(x.src,x.srcCur,cur,x.rate)}</td><td class="num"><b>${money(x.v,cur)}</b></td></tr>`}).join('')}</tbody>
+   <tfoot><tr><td colspan="7">Total approved (locked rates)</td><td class="num">${money(tot,cur)}</td></tr></tfoot></table></div>
+   ${L.some(c=>!c.approval)?`<div class="note">Pending requests (not yet approved) are valued at the latest rate as <i>indicative</i> only in the tables below.</div>`:''}</div>
+
+  <div class="grid g4" style="margin-bottom:18px">${buckets.map(([n,f])=>{const l=open.filter(f);return `<div class="kpi"><div><div class="l">${n}</div><div class="v" style="font-size:18px">${money(l.reduce((s,c)=>s+valueIn(c,cur).v,0),cur)}</div><div class="l">${l.length} open cheque(s)</div></div></div>`}).join('')}</div>
+
+  <div class="grid g2">${gt(grp(c=>c.status,c=>LABEL[c.status]),'By status','Where the money is in the cycle')}${gt(grp(c=>c.currency,c=>'Requested in '+c.currency),'By request currency','Mix of USD / QAR / SDG requests')}</div>
+  <div class="grid g2">${gt(grp(c=>c.benId,c=>B(c.benId).nameEn),'By beneficiary','Who receives the most')}${gt(grp(c=>c.deptId,c=>D(c.deptId).nameEn),'By department','Which department requests the most')}</div>
+  <div class="card"><h3>Returned cheques</h3><div class="sub">Follow-up list for Finance</div>${chequeTable(DB.cheques.filter(c=>c.status==='Returned'||c.status==='Solved'),'No returned cheques.')}</div>
+  <div class="small muted">In the .exe each report has Export to Excel / PDF and Print.</div>`;
+}
+
+/* ---------- beneficiaries ---------- */
+function beneficiaries(){
+  const key='bens',f=F(key),q=f.q.trim().toLowerCase();
+  const rows=DB.beneficiaries.filter(b=>(f.type==='All'||b.type===f.type)&&(!q||[b.nameEn,b.nameAr,b.contact,b.phone,b.email].join(' ').toLowerCase().includes(q)));
+  const p=pageOf(key,rows);
+  return `<div class="card"><div class="row between"><div><h3>Beneficiaries</h3><div class="sub" style="margin:0">Suppliers, customers and employees. Only the English name is mandatory.</div></div>${can.bens()?`<button class="btn btn-y" onclick="benModal()"><span class="ms">add</span>Add beneficiary</button>`:''}</div><div style="height:12px"></div>
+  <div class="fbar">${searchBox(key,'Search name (EN / AR), contact, phone, email…')}<select class="in" onchange="setF('${key}','type',this.value)"><option value="All">All types</option>${['Supplier','Customer','Employee','Other'].map(t=>`<option ${f.type===t?'selected':''}>${t}</option>`).join('')}</select>${clearBtn(key)}</div>
+  ${p.rows.length?`<div class="tw"><table><thead><tr><th>Type</th><th>Name (English)</th><th>Name (Arabic)</th><th>Contact person</th><th>Phone</th><th>Email</th><th class="num">Cheques</th>${can.bens()?'<th></th>':''}</tr></thead><tbody>
+  ${p.rows.map(b=>{const n=benCount(b.id);return `<tr><td><span class="chip" style="background:var(--ysoft);color:#7a5c00">${esc(b.type)}</span></td><td><b>${esc(b.nameEn)}</b></td><td class="ar">${esc(b.nameAr)||'<span class="muted">—</span>'}</td><td>${esc(b.contact)||'<span class="muted">—</span>'}</td><td>${esc(b.phone)||'<span class="muted">—</span>'}</td><td>${esc(b.email)||'<span class="muted">—</span>'}</td><td class="num">${n}</td>
+   ${can.bens()?`<td style="white-space:nowrap"><button class="btn btn-o btn-sm" title="Edit" onclick="benModal(${b.id})"><span class="ms">edit</span></button> <button class="btn btn-o btn-sm" ${n?`disabled title="Linked to ${n} cheque(s) — cannot delete"`:'title="Delete"'} onclick="delBen(${b.id})"><span class="ms" style="color:${n?'#bbb':'var(--bad)'}">delete</span></button></td>`:''}</tr>`}).join('')}</tbody></table></div>`:`<div class="empty">${DB.beneficiaries.length?'No beneficiaries match your search.':'No beneficiaries yet.'}</div>`}${p.html}
+  <div class="small muted" style="margin-top:8px">A beneficiary can be deleted only if no cheque is linked to it.</div></div>`;
+}
+function benCount(id){const x=(DB.benUse||[]).find(z=>z.id===id);return x?x.n:0}
+function delBen(id){const b=B(id),n=benCount(id);if(n){toast('Linked to '+n+' cheque(s) — cannot delete');return}
+  modal(`<div class="mh"><h3>Delete beneficiary</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div><div class="mb">Delete <b>${esc(b.nameEn)}</b>${b.nameAr?` (<span class="ar">${esc(b.nameAr)}</span>)`:''}? It is not linked to any cheque. This cannot be undone.</div>
+  <div class="mf"><button class="btn btn-o" onclick="closeM()">Cancel</button><button class="btn btn-r" onclick="doDelBen(${id})"><span class="ms">delete</span>Delete</button></div>`)}
+function benModal(id,fromReq){
+  const b=id?B(id):{type:'Supplier',nameEn:'',nameAr:'',contact:'',phone:'',email:''};
+  modal(`<div class="mh"><h3>${id?'Edit':'Add'} beneficiary</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div>
+  <form onsubmit="saveBen(event,${id||0},${!!fromReq})"><div class="mb"><div class="fgrid">
+   <div class="fg"><label>Type</label><select class="in" id="b_type">${['Supplier','Customer','Employee','Other'].map(t=>`<option ${t===b.type?'selected':''}>${t}</option>`).join('')}</select></div><div></div>
+   <div class="fg"><label>Name (English) <span class="req">*</span></label><input class="in" id="b_en" required value="${esc(b.nameEn)}"></div>
+   <div class="fg"><label>الاسم (Arabic)</label><input class="in ar" id="b_ar" value="${esc(b.nameAr)}"></div>
+   <div class="fg"><label>Contact person</label><input class="in" id="b_ct" value="${esc(b.contact)}"></div>
+   <div class="fg"><label>Phone</label><input class="in" id="b_ph" value="${esc(b.phone)}"></div>
+   <div class="fg full"><label>Email</label><input class="in" id="b_em" type="email" value="${esc(b.email)}"></div></div></div>
+  <div class="mf"><button type="button" class="btn btn-o" onclick="closeM()">Cancel</button><button class="btn btn-y">Save</button></div></form>`);
+}
+/* ---------- departments & users ---------- */
+function departments(){
+  return `<div class="card" style="max-width:820px"><div class="row between"><div><h3>Departments</h3><div class="sub" style="margin:0">One level — every user belongs to one department</div></div><button class="btn btn-y" onclick="deptModal()"><span class="ms">add</span>Add department</button></div><div style="height:12px"></div>
+  <div class="tw"><table><thead><tr><th>#</th><th>Name (English)</th><th>Name (Arabic)</th><th class="num">Users</th><th class="num">Requests</th><th></th></tr></thead><tbody>
+  ${DB.departments.map(d=>`<tr><td>${d.id}</td><td><b>${esc(d.nameEn)}</b></td><td class="ar">${esc(d.nameAr)}</td><td class="num">${DB.users.filter(u=>u.deptId===d.id).length}</td><td class="num">${DB.cheques.filter(c=>c.deptId===d.id).length}</td><td><button class="btn btn-o btn-sm" onclick="deptModal(${d.id})"><span class="ms">edit</span></button></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+function deptModal(id){const d=id?D(id):{nameEn:'',nameAr:''};
+  modal(`<div class="mh"><h3>${id?'Edit':'Add'} department</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div><form onsubmit="saveDept(event,${id||0})"><div class="mb">
+  <div class="fg"><label>Name (English) <span class="req">*</span></label><input class="in" id="d_en" required value="${esc(d.nameEn)}"></div>
+  <div class="fg"><label>الاسم (Arabic)</label><input class="in ar" id="d_ar" value="${esc(d.nameAr)}"></div></div>
+  <div class="mf"><button type="button" class="btn btn-o" onclick="closeM()">Cancel</button><button class="btn btn-y">Save</button></div></form>`)}
+function users(){
+  const P=DB.settings.policy,key='users',f=F(key),q=f.q.trim().toLowerCase();
+  const st=u=>!u.active?'<span class="chip s-Cancelled">Disabled</span>':isLocked(u)?'<span class="chip s-Returned">Locked</span>':u.mustChange?'<span class="chip s-Pending">Must change password</span>':pwdExpired(u)?'<span class="chip s-Pending">Password expired</span>':'<span class="chip s-Cleared">Active</span>';
+  const rows=DB.users.filter(u=>(f.type==='All'||u.role===f.type)&&(f.status==='All'||String(u.deptId)===f.status)&&(!q||[u.fullName,u.username].join(' ').toLowerCase().includes(q)));
+  const p=pageOf(key,rows);
+  return `<div class="card"><div class="row between"><div><h3>User management</h3><div class="sub" style="margin:0">Create users and set role, department, username and password.</div></div><div class="row"><button class="btn btn-o" onclick="S.setTab='policy';go('settings')"><span class="ms">policy</span>Sign-in policy</button><button class="btn btn-y" onclick="userModal()"><span class="ms">person_add</span>Create user</button></div></div><div style="height:12px"></div>
+  <div class="fbar">${searchBox(key,'Search name or username…')}<select class="in" onchange="setF('${key}','type',this.value)"><option value="All">All roles</option>${Object.entries(ROLES).map(([k,v])=>`<option value="${k}" ${f.type===k?'selected':''}>${v}</option>`).join('')}</select>
+   <select class="in" onchange="setF('${key}','status',this.value)"><option value="All">All departments</option>${DB.departments.map(d=>`<option value="${d.id}" ${f.status===String(d.id)?'selected':''}>${esc(d.nameEn)}</option>`).join('')}</select>${clearBtn(key)}</div>
+  ${p.rows.length?`<div class="tw"><table><thead><tr><th>Full name</th><th>Username</th><th>Role</th><th>Department</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead><tbody>
+  ${p.rows.map(u=>`<tr><td><b>${esc(u.fullName)}</b></td><td class="mono">${esc(u.username)}</td><td><span class="role">${ROLES[u.role]}</span></td><td>${esc(D(u.deptId).nameEn)}</td><td class="small">${u.lastLogin||'<span class="muted">never</span>'}</td><td>${st(u)}</td>
+   <td style="white-space:nowrap"><button class="btn btn-o btn-sm" title="Edit" onclick="userModal(${u.id})"><span class="ms">edit</span></button>${isLocked(u)?` <button class="btn btn-k btn-sm" onclick="unlockUser(${u.id})"><span class="ms">lock_open</span>Unlock</button>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">No users match your search.</div>'}${p.html}
+  <div class="note"><b>Roles</b><br>• <b>Top Management</b> — dashboards & reports, settings, user management<br>• <b>CFO</b> — the only approver; can also issue cheques and mark cleared / returned / solved; exchange rates, settings, user management<br>• <b>Finance Team</b> — exchange rates; issues approved cheques; marks cleared / returned / solved<br>• <b>Department User</b> — raises requests, follows them up, confirms receipt and delivery to the beneficiary<br><span class="muted">Everyone can raise and follow up their own requests and view exchange rates.</span></div>
+  <div class="small muted">Policy: min ${P.minLen} chars${P.upper?', upper+lower':''}${P.digit?', number':''}${P.special?', symbol':''} · expires every ${P.expiryDays||'—'} days · lock after ${P.maxAttempts} failed attempts for ${P.lockMinutes} min · sign out after ${P.sessionMin} min idle</div></div>`;
+}
+function userModal(id){const u=id?U(id):{fullName:'',username:'',role:'USER',deptId:DB.departments[0].id,active:true,mustChange:DB.settings.policy.firstChange};
+  modal(`<div class="mh"><h3>${id?'Edit':'Create'} user</h3><button class="x" onclick="closeM()"><span class="ms">close</span></button></div><form onsubmit="saveUser(event,${id||0})"><div class="mb"><div id="u_err"></div><div class="fgrid">
+  <div class="fg"><label>Full name <span class="req">*</span></label><input class="in" id="u_fn" required value="${esc(u.fullName)}"></div>
+  <div class="fg"><label>Username <span class="req">*</span></label><input class="in" id="u_un" required autocomplete="off" value="${esc(u.username)}"></div>
+  <div class="fg"><label>Role <span class="req">*</span></label><select class="in" id="u_rl">${Object.entries(ROLES).map(([k,v])=>`<option value="${k}" ${k===u.role?'selected':''}>${v}</option>`).join('')}</select></div>
+  <div class="fg"><label>Department <span class="req">*</span></label><select class="in" id="u_dp">${DB.departments.map(d=>`<option value="${d.id}" ${d.id===u.deptId?'selected':''}>${esc(d.nameEn)}</option>`).join('')}</select></div>
+  <div class="fg"><label>${id?'New password':'Password'} ${id?'':'<span class="req">*</span>'}</label><input class="in" type="password" id="u_pw" autocomplete="new-password" ${id?'placeholder="Leave empty to keep current"':'required'} oninput="polHint('u_pw','u_hint')"></div>
+  <div class="fg"><label>Confirm password</label><input class="in" type="password" id="u_pw2" autocomplete="new-password"></div>
+  <div class="full pol" id="u_hint"></div>
+  <div class="fg"><label>Status</label><select class="in" id="u_ac"><option value="1" ${u.active?'selected':''}>Active</option><option value="0" ${!u.active?'selected':''}>Disabled</option></select></div>
+  <div class="fg"><label>&nbsp;</label><label class="chk"><input type="checkbox" id="u_fc" ${u.mustChange?'checked':''}> Must change password at next sign-in</label></div></div>
+  <div class="small muted">Passwords are stored hashed (never in plain text) in the Users sheet.</div></div>
+  <div class="mf"><button type="button" class="btn btn-o" onclick="closeM()">Cancel</button><button class="btn btn-y"><span class="ms">save</span>Save user</button></div></form>`)}
+/* ---------- exchange rates (own page) ---------- */
+function fx(){
+  const r=latestRate(),key='fx',f=F(key),edit=can.fx();
+  const rows=[...DB.rates].sort((a,b)=>a.date<b.date?1:-1).filter(x=>inRange(f,x.date));const p=pageOf(key,rows);
+  const card=(cur,v)=>`<div class="kpi"><div class="ic" style="background:var(--ysoft);color:#9a7400"><span class="ms">currency_exchange</span></div><div><div class="l">1 USD =</div><div class="v">${rnum(v)} ${cur}</div></div></div>`;
+  return `<div class="grid g3">${card('QAR',r.QAR)}${card('SDG',r.SDG)}<div class="kpi"><div class="ic" style="background:var(--ysoft);color:#9a7400"><span class="ms">sync_alt</span></div><div><div class="l">1 QAR =</div><div class="v">${rnum(r.SDG/r.QAR)} SDG</div></div></div></div>
+  <div class="small muted" style="margin:8px 2px 18px">Current rate <span class="mono">${r.id}</span> · set by ${esc(r.setBy)} on ${r.setAt}${r.date!==today()?` · <b style="color:var(--bad)">today's rate not entered yet</b>`:''}</div>
+  <div class="grid ${edit?'g2':''}">
+  ${edit?`<div class="card"><h3>Enter today's rates</h3><div class="sub">Base currency USD. One rate per day; its ID is saved with every cheque the CFO approves that day.</div>
+   <form onsubmit="saveRate(event)"><div class="fg"><label>Date</label><input class="in" type="date" id="r_dt" value="${today()}" max="${today()}"></div>
+   <div class="fgrid"><div class="fg"><label>1 USD = ? QAR <span class="req">*</span></label><input class="in" id="r_q" type="number" step="0.0001" min="0.0001" required value="${r.QAR}"></div>
+   <div class="fg"><label>1 USD = ? SDG <span class="req">*</span></label><input class="in" id="r_s" type="number" step="0.0001" min="0.0001" required value="${r.SDG}"></div></div>
+   <div class="note small">A rate already used by an approved cheque is locked and cannot be changed.</div>
+   <button class="btn btn-y"><span class="ms">save</span>Save rate</button></form></div>`:''}
+  <div class="card"><h3>Rate history</h3><div class="sub">${edit?'All rates ever entered':'Read only — Finance Team and CFO maintain the rates'}</div>
+   <div class="fbar">${dateRange(key)}${clearBtn(key)}</div>
+   ${p.rows.length?`<div class="tw"><table><thead><tr><th>Date</th><th>Rate ID</th><th class="num">QAR</th><th class="num">SDG</th><th>Set by</th><th class="num">Used by</th></tr></thead><tbody>
+   ${p.rows.map(x=>{const n=DB.cheques.filter(c=>c.approval&&c.approval.fx===x.id).length;return `<tr><td>${x.date}</td><td class="mono">${x.id}</td><td class="num">${rnum(x.QAR)}</td><td class="num">${rnum(x.SDG)}</td><td class="small">${esc(fn(x.setBy))}<div class="muted">${x.setAt.slice(11)}</div></td><td class="num">${n?`${n} <span class="ms" style="font-size:15px;color:#9a7400" title="Locked">lock</span>`:'0'}</td></tr>`}).join('')}</tbody></table></div>`:'<div class="empty">No rates in this period.</div>'}${p.html}</div></div>`;
+}
+
+/* ---------- settings ---------- */
+function settings(){
+  const s=DB.settings,t=S.setTab,r=latestRate();
+  const tabs=[['alerts','Alerts & Telegram'],['policy','Sign-in policy'],['general','General']];
+  const P=s.policy;let body='';
+  if(t==='policy')body=`<form onsubmit="saveSet(event)" style="max-width:640px"><h3>Password rules</h3><div class="sub">Applied when users are created and when anyone changes a password</div>
+   <div class="fgrid"><div class="fg"><label>Minimum length</label><input class="in" type="number" min="6" max="32" id="p_min" value="${P.minLen}"></div>
+   <div class="fg"><label>Password expires every (days, 0 = never)</label><input class="in" type="number" min="0" max="365" id="p_exp" value="${P.expiryDays}"></div></div>
+   <label class="chk"><input type="checkbox" id="p_up" ${P.upper?'checked':''}> Require upper and lower case letters</label>
+   <label class="chk"><input type="checkbox" id="p_dg" ${P.digit?'checked':''}> Require at least one number</label>
+   <label class="chk"><input type="checkbox" id="p_sp" ${P.special?'checked':''}> Require at least one symbol</label>
+   <label class="chk"><input type="checkbox" id="p_fc" ${P.firstChange?'checked':''}> New users must change their password at first sign-in</label>
+   <h3 style="margin-top:18px">Sign-in protection</h3><div class="sub">Protects accounts from password guessing</div>
+   <div class="fgrid"><div class="fg"><label>Lock account after failed attempts</label><input class="in" type="number" min="3" max="10" id="p_att" value="${P.maxAttempts}"></div>
+   <div class="fg"><label>Lock duration (minutes)</label><input class="in" type="number" min="1" max="1440" id="p_lk" value="${P.lockMinutes}"></div>
+   <div class="fg"><label>Sign out after inactivity (minutes)</label><input class="in" type="number" min="5" max="480" id="p_ses" value="${P.sessionMin}"></div></div>
+   <button class="btn btn-y"><span class="ms">save</span>Save policy</button></form>`;
+  if(t==='alerts'){const cfo=S.user.role==='CFO',ok=tgReady();
+   body=`<form onsubmit="saveSet(event)" style="max-width:620px"><h3>Alert window</h3><div class="sub">Used for the daily digest and the Due Payments page</div><div class="fgrid">
+   <div class="fg"><label>Alert period (days before due date)</label><input class="in" type="number" min="1" max="90" id="s_ad" value="${s.alertDays}"></div>
+   <div class="fg"><label>Daily alert time</label><input class="in" type="time" id="s_at" value="${s.alertTime}"></div></div>
+   <h3 style="margin-top:10px">Telegram connection ${ok?'<span class="chip s-Cleared">Connected</span>':'<span class="chip s-Pending">Not set up</span>'}</h3>
+   <div class="sub">${cfo?'Only you (CFO) can see and change these. They are stored encrypted on the PC — never in the Excel file or inside the program.':'Managed by the CFO only.'}</div>
+   ${cfo?`<div class="fgrid"><div class="fg full"><label>Telegram channel (@name or -100… chat ID)</label><input class="in" id="s_tc" value="${esc(s.telegramChannel)}" placeholder="@company_cheque_alerts"></div>
+   <div class="fg full"><label>Telegram bot token</label><input class="in mono" type="password" id="s_bt" value="" placeholder="${s.tokenSet?'•••••••• saved — leave empty to keep':'123456789:AA… (from @BotFather)'}"></div></div>
+   <div class="row" style="margin-bottom:12px"><button type="button" class="btn btn-o btn-sm" onclick="tgGuide()"><span class="ms">help</span>How do I get these?</button><button type="button" class="btn btn-o btn-sm" onclick="tgTest()"><span class="ms">send</span>Send test message</button></div>
+   <h3 style="margin-top:6px">Instant stage messages</h3><div class="sub">Post to the channel when a cheque reaches these stages</div>
+   ${TG_EVENTS.map(([k,l])=>`<label class="chk"><input type="checkbox" class="tgev" data-k="${k}" ${(s.tgEvents||{})[k]?'checked':''}> ${l}</label>`).join('')}`
+   :`<div class="note">Channel: <b>${ok?esc(s.telegramChannel):'—'}</b> · Bot token: <b>${ok?'••••••••':'—'}</b></div>`}
+   <button class="btn btn-y"><span class="ms">save</span>Save</button></form>`}
+  if(t==='general'){const tzs=[['Africa/Khartoum','Sudan (Khartoum)'],['Asia/Qatar','Qatar (Doha)'],['Asia/Dubai','UAE (Dubai)'],['Asia/Riyadh','Saudi Arabia (Riyadh)'],['Africa/Cairo','Egypt (Cairo)']];
+   body=`<form onsubmit="saveSet(event)" style="max-width:560px"><div class="fg"><label>Company name</label><input class="in" id="s_cn" value="${esc(s.company)}"></div>
+   <div class="fg"><label>Default report currency</label><select class="in" id="s_rc">${CURS.map(c=>`<option ${c===s.reportCurrency?'selected':''}>${c}</option>`).join('')}</select></div>
+   <div class="fg"><label>Time zone (dates, due days and alert time)</label><select class="in" id="s_tz">${tzs.map(([k,v])=>`<option value="${k}" ${k===s.timeZone?'selected':''}>${v}</option>`).join('')}</select></div>
+   <div class="fg"><label>Company logo (PNG/JPG, max 250 KB)</label><input class="in" type="file" accept="image/png,image/jpeg,image/svg+xml,image/webp" onchange="pickLogo(this)"><div id="lg_prev" style="margin-top:8px">${s.logo?`<img src="${esc(s.logo)}" style="max-height:60px">`:'<span class="muted small">No logo yet</span>'}</div>
+   ${s.logo?`<label class="chk"><input type="checkbox" onchange="S.pendingLogo=this.checked?'':undefined"> Remove logo</label>`:''}</div>
+   ${s.cronUrl?`<div class="note"><b>Daily alert wake-up link</b> (CFO only — keep private)<br><span class="small">The free plan sleeps when idle. Add this link at <b>cron-job.org</b> (free) to run every 30 minutes, so the daily Telegram digest is always sent on time:</span><div class="row" style="margin-top:6px;flex-wrap:nowrap"><input class="in mono" readonly value="${esc(s.cronUrl)}" onclick="this.select()"><button type="button" class="btn btn-o btn-sm" onclick="navigator.clipboard.writeText('${esc(s.cronUrl)}').then(()=>toast('Copied'))"><span class="ms">content_copy</span></button></div></div>`:''}
+   <button class="btn btn-y"><span class="ms">save</span>Save</button></form>`}
+  return `<div class="card"><div class="tabs">${tabs.map(([k,v])=>`<button class="${t===k?'on':''}" onclick="S.setTab='${k}';render()">${v}</button>`).join('')}</div>${body}</div>`;
+}
+/* ---------- audit ---------- */
+function auditView(){const key='audit',f=F(key),q=f.q.trim().toLowerCase();
+  const rows=DB.audit.filter(a=>inRange(f,a.at.slice(0,10))&&(!q||[a.user,a.action,a.entity,a.details].join(' ').toLowerCase().includes(q)));const p=pageOf(key,rows);
+  return `<div class="card"><h3>Audit log</h3><div class="sub">Who did what and when — requests, approvals, rates, settings, users, sign-ins. Read-only.</div>
+  <div class="fbar">${searchBox(key,'Search user, action, record…')}${dateRange(key)}${clearBtn(key)}</div>
+  ${p.rows.length?`<div class="tw"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Record</th><th>Details</th></tr></thead><tbody>${p.rows.map(a=>`<tr><td class="small" style="white-space:nowrap">${a.at}</td><td><b>${esc(a.user)}</b></td><td>${esc(a.action)}</td><td class="mono">${esc(a.entity)}</td><td class="small">${esc(a.details)}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">No entries match.</div>'}${p.html}</div>`}
+async function submitReq(e){e.preventDefault();
+  const j=await act('submitReq',{benId:+f_ben.value,amount:+f_amt.value,currency:f_cur.value,dueDate:f_due.value,reason:f_rsn.value.trim()});
+  if(j){toast(j.id+' submitted to CFO');S.page='mine';render();openCheque(j.id)}}
+async function approve(id){if(await act('approve',{id,payCur:a_cur.value},id+' approved — rate locked'))openCheque(id)}
+async function reject(id){const rs=a_rej.value.trim();if(!rs){toast('Enter a rejection reason');a_rej.focus();return}
+  if(await act('reject',{id,reason:rs},id+' rejected'))openCheque(id)}
+async function cancelReq(id){if(await act('cancelReq',{id},id+' cancelled'))openCheque(id)}
+async function issueChq(id){if(!w_no.value.trim()||!w_bank.value.trim()||!w_date.value){toast('Cheque number, bank and date are required');return}
+  if(await act('issue',{id,no:w_no.value.trim(),bank:w_bank.value.trim(),date:w_date.value},id+' issued — waiting requester confirmation'))openCheque(id)}
+async function confirmRecv(id){if(await act('receive',{id},'Receipt confirmed'))openCheque(id)}
+async function confirmDeliv(id){if(await act('deliver',{id,to:d_to.value.trim(),date:d_dt.value},'Delivery confirmed — thank you'))openCheque(id)}
+async function closeChq(id,st){const rs=document.getElementById('c_rsn')?.value.trim()||'';
+  if(st==='Returned'&&!rs){toast('Enter the return reason');return}
+  if(await act('close',{id,status:st,reason:rs},id+' '+st.toLowerCase()))openCheque(id)}
+async function solveChq(id){const n=s_note.value.trim();if(!n){toast('Describe how it was solved');s_note.focus();return}
+  if(await act('solve',{id,note:n},id+' marked solved'))openCheque(id)}
+async function sendAlert(){await act('sendDigest',{},'Daily digest posted to '+DB.settings.telegramChannel)}
+async function doDelBen(id){if(await act('delBen',{id},'Beneficiary deleted'))closeM()}
+async function saveBen(e,id,fromReq){e.preventDefault();
+  const v={id,type:b_type.value,nameEn:b_en.value.trim(),nameAr:b_ar.value.trim(),contact:b_ct.value.trim(),phone:b_ph.value.trim(),email:b_em.value.trim()};
+  const keep=fromReq?{amt:f_amt.value,cur:f_cur.value,due:f_due.value,rsn:f_rsn.value}:null;
+  const j=await act('saveBen',v,'Beneficiary saved');if(!j)return;closeM();
+  if(keep){render();f_ben.value=j.id;f_amt.value=keep.amt;f_cur.value=keep.cur;f_due.value=keep.due;f_rsn.value=keep.rsn}}
+async function saveDept(e,id){e.preventDefault();if(await act('saveDept',{id,nameEn:d_en.value.trim(),nameAr:d_ar.value.trim()},'Department saved'))closeM()}
+async function unlockUser(id){await act('unlockUser',{id},'Account unlocked')}
+async function saveUser(e,id){e.preventDefault();const ue=m=>u_err.innerHTML=`<div class="err">${esc(m)}</div>`;
+  const pw=u_pw.value;if((pw||!id)&&pw!==u_pw2.value)return ue('Passwords do not match.');
+  const j=await api('/api/act',{action:'saveUser',id,fullName:u_fn.value.trim(),username:u_un.value.trim(),role:u_rl.value,deptId:+u_dp.value,active:u_ac.value==='1',mustChange:u_fc.checked,password:pw});
+  if(!j.ok)return ue(j.error||'Could not save');closeM();await loadState();render();toast('User saved')}
+async function saveRate(e){e.preventDefault();await act('saveRate',{date:r_dt.value,QAR:+r_q.value,SDG:+r_s.value},'Rate saved')}
+async function saveSet(e){e.preventDefault();const g=id=>document.getElementById(id);let d;
+  if(S.setTab==='alerts'){d={section:'alerts',alertDays:+s_ad.value,alertTime:s_at.value};
+    if(document.querySelector('.tgev')){d.tgEvents={};document.querySelectorAll('.tgev').forEach(x=>d.tgEvents[x.dataset.k]=x.checked)}
+    if(g('s_tc')&&S.user.role==='CFO'){const ch=s_tc.value.trim(),tk=s_bt.value.trim();
+      if(ch&&(ch!==DB.settings.telegramChannel||tk)){if(!await act('tgConnect',{channel:ch,token:tk},'Telegram connected — test message sent'))return}}}
+  else if(S.setTab==='policy')d={section:'policy',minLen:+p_min.value,expiryDays:+p_exp.value,upper:p_up.checked,digit:p_dg.checked,special:p_sp.checked,firstChange:p_fc.checked,maxAttempts:+p_att.value,lockMinutes:+p_lk.value,sessionMin:+p_ses.value};
+  else if(S.setTab==='general')d={section:'general',company:s_cn.value.trim(),reportCurrency:s_rc.value,timeZone:s_tz.value,logo:S.pendingLogo!==undefined?S.pendingLogo:DB.settings.logo};
+  if(d&&await act('saveSettings',d,'Settings saved')){S.pendingLogo=undefined;bump()}}
+function pickLogo(inp){const f=inp.files[0];if(!f)return;if(f.size>250000){toast('Logo too large — max 250 KB');inp.value='';return}
+  const r=new FileReader();r.onload=()=>{S.pendingLogo=r.result;document.getElementById('lg_prev').innerHTML=`<img src="${r.result}" style="max-height:60px">`};r.readAsDataURL(f)}
+function tgReady(){const s=DB&&DB.settings;return !!(s&&s.tokenSet&&s.telegramChannel)}
+async function tgSave(){const ch=ts_ch.value.trim(),tk=ts_tk.value.trim(),e=m=>tg_err.innerHTML=`<div class="err">${esc(m)}</div>`;
+  if(!/^(@[A-Za-z0-9_]{4,}|-100\d{6,})$/.test(ch))return e('Channel must look like @channelname or -100…');
+  if(!/^\d{6,}:[A-Za-z0-9_-]{20,}$/.test(tk))return e('That does not look like a bot token (format 123456789:AA…).');
+  const j=await api('/api/act',{action:'tgConnect',channel:ch,token:tk});
+  if(!j.ok)return e(j.error||'Could not connect');closeM();await loadState();render();toast('Telegram connected — test message sent to '+ch)}
+async function tgTest(){const ch=document.getElementById('s_tc').value.trim(),tk=document.getElementById('s_bt').value.trim();
+  if(!ch){toast('Enter the channel first');return}
+  await act('tgConnect',{channel:ch,token:tk},'Test message sent to '+ch)}
+function exportCSV(name,rows){
+  const head=['Ref','Requester','Department','Beneficiary','Amount','Currency','Pay amount','Pay currency','Rate ID','Due date','Status','Cheque no','Bank','Reason'];
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const lines=[head.map(q).join(',')].concat(rows.map(c=>[c.id,U(c.requesterId).fullName,D(c.deptId).nameEn,B(c.benId).nameEn,c.amount,c.currency,c.approval?c.approval.payAmt:'',c.approval?c.approval.payCur:'',c.approval?c.approval.fx:'',c.dueDate,LABEL[c.status]||c.status,c.cheque?c.cheque.no:'',c.cheque?c.cheque.bank:'',c.reason].map(q).join(',')));
+  const blob=new Blob(['﻿'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name+'-'+today()+'.csv';document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
+
+boot();
+</script>
+</body>
+</html>
