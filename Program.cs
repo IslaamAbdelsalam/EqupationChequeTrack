@@ -1,7 +1,9 @@
 using System.Globalization;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ChequeTrack;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -18,6 +20,7 @@ builder.Services.AddSingleton<SettingsStore>();
 builder.Services.AddHttpClient("tg", c => c.Timeout = TimeSpan.FromSeconds(15));
 builder.Services.AddSingleton<Telegram>();
 builder.Services.AddSingleton<Notifier>();
+builder.Services.AddSingleton<Mailer>();
 builder.Services.AddHostedService<DailyWorker>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o =>
 {
@@ -37,16 +40,18 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
+    var store = scope.ServiceProvider.GetRequiredService<SettingsStore>();
+    var startLog = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
     var strategy = db.Database.CreateExecutionStrategy();
     await strategy.ExecuteAsync(async () => { await db.Database.EnsureCreatedAsync(); });
+    await strategy.ExecuteAsync(async () => { await Schema.Upgrade(db, store, startLog); });
 
     // One-time CFO reset: set the app setting CFO_RESET to a new value in Azure.
     // Clears only the CFO's sign-in and reopens the setup screen; all other data is kept.
     var rsId = (app.Configuration["CFO_RESET"] ?? "").Trim();
     if (rsId.Length > 0)
     {
-        var rsStore = scope.ServiceProvider.GetRequiredService<SettingsStore>();
-        var rsSet = await rsStore.Get(db);
+        var rsSet = await store.Get(db);
         if (rsSet.CfoResetDone != rsId && await db.Users.AnyAsync())
         {
             var rsCfo = await db.Users.Where(x => x.Role == Roles.CFO).OrderBy(x => x.Id).FirstOrDefaultAsync();
@@ -54,7 +59,7 @@ using (var scope = app.Services.CreateScope())
             rsSet.CfoResetDone = rsId;
             rsSet.CfoResetUser = rsCfo?.Id ?? 0;
             Log(db, rsSet, "Azure admin", "CFO reset requested", "SETUP", rsCfo == null ? "No CFO account found" : "CFO sign-in cleared for USR-" + rsCfo.Id);
-            await rsStore.Save(db, rsSet);
+            await store.Save(db, rsSet);
         }
     }
 }
@@ -71,7 +76,10 @@ app.Use(async (ctx, next) =>
     await next();
 });
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = c => { if (c.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) c.Context.Response.Headers["Cache-Control"] = "no-cache"; }
+});
 app.UseAuthentication();
 app.UseAuthorization();
 
@@ -89,7 +97,7 @@ async Task<AppUser> CurrentUser(HttpContext ctx, AppDb db)
     if (stamp == null || stamp != Stamp(u)) return null; // password changed → old sessions end
     return u;
 }
-string Stamp(AppUser u) => Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(u.PwdHash ?? ""))).Substring(0, 16);
+string Stamp(AppUser u) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(u.PwdHash ?? ""))).Substring(0, 16);
 
 string Forced(AppUser u, AppSettings s)
 {
@@ -104,23 +112,46 @@ async Task SignIn(HttpContext ctx, AppUser u)
     await ctx.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme)));
 }
 
-void Log(AppDb db, AppSettings s, string user, string action, string entity, string details)
-    => db.Audit.Add(new AuditEntry { At = Clock.Stamp(s), User = user ?? "", Action = action ?? "", Entity = entity ?? "", Details = Trunc(details, 1000) });
-string Trunc(string v, int n) => v == null ? "" : (v.Length > n ? v.Substring(0, n) : v);
+// System Admin manages users and settings. Until a System Admin exists, the CFO keeps that job.
+async Task<bool> AnyAdmin(AppDb db) => await db.Users.AnyAsync(x => x.Role == Roles.ADMIN && x.Active);
+bool IsAdmin(AppUser u, bool anyAdmin) => u.Role == Roles.ADMIN || (u.Role == Roles.CFO && !anyAdmin);
+
+string BaseUrl(HttpContext ctx)
+{
+    var host = ctx.Request.Host.Value ?? "";
+    var local = host.StartsWith("localhost", StringComparison.OrdinalIgnoreCase) || host.StartsWith("127.0.0.1", StringComparison.Ordinal);
+    return (local ? ctx.Request.Scheme : "https") + "://" + host;
+}
 
 object PolicyView(Policy p) => new { minLen = p.MinLen, upper = p.Upper, digit = p.Digit, special = p.Special, expiryDays = p.ExpiryDays, maxAttempts = p.MaxAttempts, lockMinutes = p.LockMinutes, firstChange = p.FirstChange, sessionMin = p.SessionMin };
-object UserView(AppUser u) => new { id = u.Id, username = u.Username, fullName = u.FullName, role = u.Role, deptId = u.DeptId };
+object UserView(AppUser u, bool admin) => new { id = u.Id, username = u.Username, fullName = u.FullName, role = u.Role, deptId = u.DeptId, email = u.Email ?? "", lang = string.IsNullOrEmpty(u.Lang) ? "en" : u.Lang, isAdmin = admin };
+
+async Task<string> SendReset(AppDb db, AppSettings s, Mailer mail, AppUser x, string baseUrl)
+{
+    if (string.IsNullOrWhiteSpace(x.Email)) return "This user has no email.";
+    if (!Mailer.Ready(s)) return "Email is not set up yet (Settings › Email).";
+    var since = DateTime.UtcNow.AddHours(-1);
+    if (await db.PwdResets.CountAsync(r => r.UserId == x.Id && r.CreatedUtc > since) >= 5) return "Too many reset emails in the last hour. Try again later.";
+    var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+    db.PwdResets.Add(new PwdReset { UserId = x.Id, TokenHash = Sha(token), CreatedUtc = DateTime.UtcNow, ExpUtc = DateTime.UtcNow.AddMinutes(30) });
+    await db.SaveChangesAsync();
+    var ar = x.Lang == "ar"; var link = baseUrl + "/#reset=" + token;
+    var html = ar
+        ? Mailer.Layout(true, "إعادة تعيين كلمة المرور", $"<p>مرحباً {Fmt.H(Fmt.First(x.FullName))}،</p><p>وصلنا طلب لإعادة تعيين كلمة مرورك في ChequeTrack.</p><p style=\"color:#666;font-size:13px\">الرابط يعمل مرة واحدة وتنتهي صلاحيته بعد 30 دقيقة. إن لم تطلب ذلك فتجاهل هذه الرسالة وستبقى كلمة مرورك كما هي.</p>", "تعيين كلمة مرور جديدة", link)
+        : Mailer.Layout(false, "Reset your password", $"<p>Hello {Fmt.H(Fmt.First(x.FullName))},</p><p>We received a request to reset your ChequeTrack password.</p><p style=\"color:#666;font-size:13px\">This link works once and expires in 30 minutes. If you did not ask for it, ignore this email and your password stays the same.</p>", "Set a new password", link);
+    return await mail.Send(s, x.Email, ar ? "إعادة تعيين كلمة مرور ChequeTrack" : "Reset your ChequeTrack password", html);
+}
 
 // ---------- public / session endpoints ----------
 app.MapGet("/api/me", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
 {
     var s = await ss.Get(db);
     var any = await db.Users.AnyAsync();
-    var brand = new { company = s.Company, logo = s.Logo };
-    if (!any || s.CfoResetUser >= 0) return Ok(new { setup = true, reset = any, brand });
+    var brand = new { company = s.Company, logo = s.Logo, mail = Mailer.Ready(s) };
+    if (!any || s.CfoResetUser >= 0) return Ok(new { setup = true, reset = any, brand, policy = PolicyView(s.Policy) });
     var u = await CurrentUser(ctx, db);
-    if (u == null) return Ok(new { setup = false, user = (object)null, brand });
-    return Ok(new { setup = false, user = UserView(u), forced = Forced(u, s), sessionMin = s.Policy.SessionMin, policy = PolicyView(s.Policy), brand });
+    if (u == null) return Ok(new { setup = false, user = (object)null, brand, policy = PolicyView(s.Policy) });
+    return Ok(new { setup = false, user = UserView(u, IsAdmin(u, await AnyAdmin(db))), forced = Forced(u, s), sessionMin = s.Policy.SessionMin, policy = PolicyView(s.Policy), brand });
 });
 
 app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, JsonElement b) =>
@@ -131,14 +162,17 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
     if (any && !reset) return Err("Setup is already done.");
     var s = reset ? cur : new AppSettings();
     var company = Str(b, "company"); var full = Str(b, "fullName"); var un = Str(b, "username").ToLowerInvariant(); var pw = Str(b, "password", false);
+    var email = Str(b, "email").ToLowerInvariant(); var lang = Str(b, "lang") == "ar" ? "ar" : "en";
     if ((!reset && company.Length < 2) || full.Length < 2) return Err("Company and full name are required.");
-    if (!System.Text.RegularExpressions.Regex.IsMatch(un, "^[a-z0-9._-]{3,}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore.");
+    if (!Regex.IsMatch(un, "^[a-z0-9._-]{3,}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore.");
+    if (!ValidEmail(email)) return Err("Enter a valid email. It is used to reset the password.");
     var pe = Pwd.Check(pw, s.Policy); if (pe != null) return Err(pe);
     if (reset)
     {
         // Re-create the CFO sign-in only; departments, users, cheques and settings stay as they are
         var rid = s.CfoResetUser;
         if (await db.Users.AnyAsync(x => x.Username == un && x.Id != rid)) return Err("That username is already used by another account.");
+        if (await db.Users.AnyAsync(x => x.Email == email && x.Id != rid)) return Err("That email is already used by another account.");
         var cu = rid > 0 ? await db.Users.FirstOrDefaultAsync(x => x.Id == rid) : null;
         if (cu == null)
         {
@@ -147,7 +181,7 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
             cu = new AppUser { DeptId = dept.Id };
             db.Users.Add(cu);
         }
-        cu.Username = un; cu.FullName = full; cu.Role = Roles.CFO; cu.Active = true; cu.MustChange = false; cu.Failed = 0; cu.LockedUntilUtc = null;
+        cu.Username = un; cu.FullName = full; cu.Email = email; cu.Lang = lang; cu.Role = Roles.CFO; cu.Active = true; cu.MustChange = false; cu.Failed = 0; cu.LockedUntilUtc = null;
         cu.PwdHash = Pwd.Hash(pw); cu.PwdChangedAt = Clock.Today(s);
         s.CfoResetUser = -1;
         Log(db, s, full, "CFO account reset", "SETUP", "CFO sign-in re-created after a reset from Azure");
@@ -163,7 +197,7 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
     var fin = new Department { NameEn = "Finance", NameAr = "المالية" };
     db.Departments.AddRange(mg, fin);
     await db.SaveChangesAsync();
-    var u = new AppUser { Username = un, FullName = full, Role = Roles.CFO, DeptId = fin.Id, PwdHash = Pwd.Hash(pw), PwdChangedAt = Clock.Today(s), Active = true };
+    var u = new AppUser { Username = un, FullName = full, Email = email, Lang = lang, Role = Roles.CFO, DeptId = fin.Id, PwdHash = Pwd.Hash(pw), PwdChangedAt = Clock.Today(s), Active = true };
     db.Users.Add(u);
     Log(db, s, full, "System set up", "SETUP", "First CFO account created");
     await db.SaveChangesAsync();
@@ -171,15 +205,15 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
     return Ok(new { ok = true });
 });
 
-app.MapPost("/api/login", async (HttpContext ctx, AppDb db, SettingsStore ss, JsonElement b) =>
+app.MapPost("/api/login", async (HttpContext ctx, AppDb db, SettingsStore ss, Mailer mail, IDataProtectionProvider dp, JsonElement b) =>
 {
     var s = await ss.Get(db); var P = s.Policy;
     var un = Str(b, "username").ToLowerInvariant(); var pw = Str(b, "password", false);
     var u = await db.Users.FirstOrDefaultAsync(x => x.Username == un);
     if (u == null) { await Task.Delay(400); return Err("Invalid username or password."); }
-    if (!u.Active) return Err("This account is disabled. Contact Top Management or the CFO.");
+    if (!u.Active) return Err("This account is disabled. Contact the System Admin.");
     if (u.LockedUntilUtc.HasValue && u.LockedUntilUtc > DateTime.UtcNow)
-        return Err($"Account locked after {P.MaxAttempts} failed attempts. Try again in {Math.Ceiling((u.LockedUntilUtc.Value - DateTime.UtcNow).TotalMinutes)} min, or ask an admin to unlock it.");
+        return Err($"Account locked after {P.MaxAttempts} failed attempts. Try again in {Math.Ceiling((u.LockedUntilUtc.Value - DateTime.UtcNow).TotalMinutes)} min, or ask the System Admin to unlock it.");
     if (!Pwd.Verify(pw, u.PwdHash))
     {
         u.Failed++;
@@ -193,11 +227,93 @@ app.MapPost("/api/login", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
         await db.SaveChangesAsync();
         return Err($"Invalid username or password. {P.MaxAttempts - u.Failed} attempt(s) left before lock.");
     }
-    u.Failed = 0; u.LockedUntilUtc = null; u.LastLogin = Clock.Stamp(s);
+    u.Failed = 0; u.LockedUntilUtc = null;
+    if (u.TwoFa)
+    {
+        // two-step verification: a 6-digit code sent to the user's email
+        if (string.IsNullOrWhiteSpace(u.Email) || !Mailer.Ready(s)) return Err("Two-step verification needs email, which is not set up. Ask the System Admin.");
+        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("000000", CultureInfo.InvariantCulture);
+        u.TwoFaHash = Sha(u.Id + ":" + code); u.TwoFaExpUtc = DateTime.UtcNow.AddMinutes(10); u.TwoFaTries = 0;
+        await db.SaveChangesAsync();
+        var ar = u.Lang == "ar";
+        var html = ar
+            ? Mailer.Layout(true, "رمز الدخول", $"<p>رمز الدخول إلى ChequeTrack:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:6px\">{code}</p><p style=\"color:#666;font-size:13px\">صالح لمدة 10 دقائق. إن لم تحاول الدخول فغيّر كلمة مرورك.</p>")
+            : Mailer.Layout(false, "Your sign-in code", $"<p>Your ChequeTrack sign-in code:</p><p style=\"font-size:28px;font-weight:700;letter-spacing:6px\">{code}</p><p style=\"color:#666;font-size:13px\">It is valid for 10 minutes. If you did not try to sign in, change your password.</p>");
+        var err = await mail.Send(s, u.Email, ar ? "رمز الدخول إلى ChequeTrack" : "Your ChequeTrack sign-in code", html);
+        if (err != null) return Err(err);
+        var ticket = dp.CreateProtector("ChequeTrack.2fa.v1").Protect(u.Id + "|" + DateTime.UtcNow.AddMinutes(10).Ticks.ToString(CultureInfo.InvariantCulture));
+        return Ok(new { ok = true, twofa = true, ticket, email = Mask(u.Email) });
+    }
+    u.LastLogin = Clock.Stamp(s);
     Log(db, s, u.FullName, "Signed in", "USR-" + u.Id, "");
     await db.SaveChangesAsync();
     await SignIn(ctx, u);
-    return Ok(new { ok = true, user = UserView(u), forced = Forced(u, s), sessionMin = P.SessionMin, policy = PolicyView(P) });
+    return Ok(new { ok = true, user = UserView(u, IsAdmin(u, await AnyAdmin(db))), forced = Forced(u, s), sessionMin = P.SessionMin, policy = PolicyView(P) });
+});
+
+app.MapPost("/api/login2", async (HttpContext ctx, AppDb db, SettingsStore ss, IDataProtectionProvider dp, JsonElement b) =>
+{
+    var s = await ss.Get(db);
+    string raw;
+    try { raw = dp.CreateProtector("ChequeTrack.2fa.v1").Unprotect(Str(b, "ticket")); } catch { return Err("This sign-in has expired. Sign in again."); }
+    var parts = raw.Split('|');
+    if (parts.Length != 2 || !int.TryParse(parts[0], out var uid) || !long.TryParse(parts[1], out var ticks) || new DateTime(ticks, DateTimeKind.Utc) < DateTime.UtcNow)
+        return Err("This sign-in has expired. Sign in again.");
+    var u = await db.Users.FirstOrDefaultAsync(x => x.Id == uid);
+    if (u == null || !u.Active || !u.TwoFaExpUtc.HasValue || u.TwoFaExpUtc < DateTime.UtcNow) return Err("The code has expired. Sign in again.");
+    if (u.TwoFaTries >= 5) return Err("Too many wrong codes. Sign in again.");
+    var code = Regex.Replace(Str(b, "code"), "[^0-9]", "");
+    if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(Sha(u.Id + ":" + code)), Encoding.UTF8.GetBytes(u.TwoFaHash ?? "")))
+    {
+        u.TwoFaTries++; await db.SaveChangesAsync();
+        return Err("That code is not correct.");
+    }
+    u.TwoFaHash = ""; u.TwoFaExpUtc = null; u.TwoFaTries = 0; u.LastLogin = Clock.Stamp(s);
+    Log(db, s, u.FullName, "Signed in (two-step)", "USR-" + u.Id, "");
+    await db.SaveChangesAsync();
+    await SignIn(ctx, u);
+    return Ok(new { ok = true });
+});
+
+app.MapPost("/api/forgot", async (HttpContext ctx, AppDb db, SettingsStore ss, Mailer mail, JsonElement b) =>
+{
+    var s = await ss.Get(db);
+    var email = Str(b, "email").ToLowerInvariant();
+    if (!Mailer.Ready(s)) return Err("Password reset by email is not set up yet. Ask the System Admin.");
+    // Same answer whatever the email, so nobody can find out which emails have accounts.
+    if (ValidEmail(email))
+    {
+        var x = await db.Users.FirstOrDefaultAsync(y => y.Email == email && y.Active);
+        if (x != null)
+        {
+            var err = await SendReset(db, s, mail, x, BaseUrl(ctx));
+            Log(db, s, x.FullName, "Password reset requested", "USR-" + x.Id, err ?? "email sent");
+            await db.SaveChangesAsync();
+        }
+        else await Task.Delay(300);
+    }
+    return Ok(new { ok = true });
+});
+
+app.MapPost("/api/reset", async (HttpContext ctx, AppDb db, SettingsStore ss, JsonElement b) =>
+{
+    var s = await ss.Get(db);
+    var token = Str(b, "token"); var pw = Str(b, "password", false);
+    if (token.Length < 20) return Err("This reset link is not valid.");
+    var h = Sha(token);
+    var r = await db.PwdResets.FirstOrDefaultAsync(x => x.TokenHash == h);
+    if (r == null || r.UsedUtc.HasValue || r.ExpUtc < DateTime.UtcNow) return Err("This reset link has expired or was already used. Ask for a new one.");
+    var u = await db.Users.FirstOrDefaultAsync(x => x.Id == r.UserId);
+    if (u == null || !u.Active) return Err("This account is disabled.");
+    if (Str(b, "check") == "1") return Ok(new { ok = true, name = Fmt.First(u.FullName) });
+    var pe = Pwd.Check(pw, s.Policy); if (pe != null) return Err(pe);
+    u.PwdHash = Pwd.Hash(pw); u.MustChange = false; u.PwdChangedAt = Clock.Today(s); u.Failed = 0; u.LockedUntilUtc = null;
+    r.UsedUtc = DateTime.UtcNow;
+    foreach (var o in await db.PwdResets.Where(x => x.UserId == u.Id && x.UsedUtc == null).ToListAsync()) o.UsedUtc = DateTime.UtcNow;
+    Log(db, s, u.FullName, "Password reset by email", "USR-" + u.Id, "");
+    await db.SaveChangesAsync();
+    await SignIn(ctx, u);
+    return Ok(new { ok = true });
 });
 
 app.MapPost("/api/logout", async (HttpContext ctx, AppDb db, SettingsStore ss, JsonElement b) =>
@@ -234,33 +350,51 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
     var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
-    var admin = Roles.Admin(u.Role); var seeAll = Roles.SeeAll(u.Role);
+    var anyAdmin = await AnyAdmin(db);
+    var admin = IsAdmin(u, anyAdmin); var seeAll = Roles.SeeAll(u.Role);
 
     var cq = db.Cheques.AsNoTracking();
     if (!seeAll) cq = cq.Where(c => c.RequesterId == u.Id);
-    var cheques = (await cq.OrderByDescending(c => c.Seq).ToListAsync()).Select(ChequeView).ToList();
+    var chq = await cq.OrderByDescending(c => c.Seq).ToListAsync();
+    var ids = chq.Select(c => c.Id).ToList();
+    var lines = (await db.ChequeLines.AsNoTracking().Where(l => ids.Contains(l.ChequeId)).ToListAsync()).GroupBy(l => l.ChequeId).ToDictionary(g => g.Key, g => g.OrderBy(l => l.Id).ToList());
+    var files = (await db.Attachments.AsNoTracking().Where(a => ids.Contains(a.ChequeId))
+        .Select(a => new { a.Id, a.ChequeId, a.Kind, a.FileName, a.Size, a.By, a.At }).ToListAsync()).GroupBy(a => a.ChequeId).ToDictionary(g => g.Key, g => g.ToList());
+    var cheques = chq.Select(c => ChequeView(c,
+        lines.TryGetValue(c.Id, out var ls) ? ls.Select(l => (object)new { opNo = l.OpNo, instNo = l.InstNo, month = l.Month, due = l.Due, paidBefore = l.PaidBefore, requested = l.Requested, principal = l.Principal }).ToList() : new List<object>(),
+        files.TryGetValue(c.Id, out var fs) ? fs.Select(f => (object)new { id = f.Id, kind = f.Kind, name = f.FileName, size = f.Size, by = f.By, at = f.At }).ToList() : new List<object>())).ToList();
 
     var users = await db.Users.AsNoTracking().OrderBy(x => x.FullName).ToListAsync();
     var uv = users.Select(x => admin
-        ? (object)new { id = x.Id, username = x.Username, fullName = x.FullName, role = x.Role, deptId = x.DeptId, active = x.Active, mustChange = x.MustChange,
-            lockedUntil = x.LockedUntilUtc.HasValue && x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc.Value.ToString("o") : null, pwdChangedAt = x.PwdChangedAt, lastLogin = x.LastLogin }
+        ? (object)new { id = x.Id, username = x.Username, fullName = x.FullName, email = x.Email ?? "", role = x.Role, deptId = x.DeptId, active = x.Active, mustChange = x.MustChange,
+            lang = x.Lang ?? "en", twoFa = x.TwoFa, lockedUntil = x.LockedUntilUtc.HasValue && x.LockedUntilUtc > DateTime.UtcNow ? x.LockedUntilUtc.Value.ToString("o") : null,
+            pwdChangedAt = x.PwdChangedAt, lastLogin = x.LastLogin }
         : new { id = x.Id, fullName = x.FullName, role = x.Role, deptId = x.DeptId, active = x.Active }).ToList();
 
+    var all = await db.Cheques.AsNoTracking().Select(c => new { c.FxId, c.IssueRateId, c.ClearRateId }).ToListAsync();
+    var used = new HashSet<string>(all.SelectMany(c => new[] { c.FxId, c.IssueRateId, c.ClearRateId }).Where(x => !string.IsNullOrEmpty(x)));
     var rates = (await db.Rates.AsNoTracking().OrderByDescending(r => r.Date).ToListAsync())
-        .Select(r => new { id = r.Id, date = r.Date, QAR = r.QAR, SDG = r.SDG, setBy = r.SetBy, setAt = r.SetAt }).ToList();
+        .Select(r => new { id = r.Id, date = r.Date, QAR = r.QAR, SDG = r.SDG, setBy = r.SetBy, setAt = r.SetAt, source = r.Source ?? "", locked = used.Contains(r.Id) }).ToList();
 
     var tokenSet = !string.IsNullOrEmpty(ss.Token(s));
     var settings = new
     {
-        alertDays = s.AlertDays, alertTime = s.AlertTime, telegramChannel = s.TelegramChannel, tokenSet,
-        tgEvents = s.TgEvents, reportCurrency = s.ReportCurrency, company = s.Company, timeZone = s.TimeZone, logo = s.Logo, banks = s.Banks,
-        cronUrl = u.Role == Roles.CFO ? $"https://{ctx.Request.Host}/api/cron/{s.CronKey}" : null,
-        policy = new { minLen = s.Policy.MinLen, upper = s.Policy.Upper, digit = s.Policy.Digit, special = s.Policy.Special, expiryDays = s.Policy.ExpiryDays,
-            maxAttempts = s.Policy.MaxAttempts, lockMinutes = s.Policy.LockMinutes, firstChange = s.Policy.FirstChange, sessionMin = s.Policy.SessionMin }
+        alertDays = s.AlertDays, alertTime = s.AlertTime, telegramChannel = seeAll ? s.TelegramChannel : "", tokenSet, tgEvents = s.TgEvents, hideTelegram = s.HideTelegram,
+        reportCurrency = s.ReportCurrency, company = s.Company, timeZone = s.TimeZone, logo = s.Logo,
+        cronUrl = (admin || u.Role == Roles.CFO) ? $"{BaseUrl(ctx)}/api/cron/{s.CronKey}" : null,
+        policy = PolicyView(s.Policy), secondLimitUsd = s.SecondLimitUsd, rateAlertPct = s.RateAlertPct,
+        acc = new { payables = s.Acc.Payables, deferred = s.Acc.Deferred, finPrincipal = s.Acc.FinPrincipal, finProfit = s.Acc.FinProfit, poa = s.Acc.Poa, fxDiff = s.Acc.FxDiff }, funcConfirmed = s.FuncConfirmed,
+        mailReady = Mailer.Ready(s),
+        smtp = admin ? new { host = s.Smtp.Host, port = s.Smtp.Port, user = s.Smtp.User, from = s.Smtp.From, fromName = s.Smtp.FromName, ssl = s.Smtp.Ssl, passSet = !string.IsNullOrEmpty(s.Smtp.PassEnc) } : null
     };
 
+    var accounts = await db.BankAccounts.AsNoTracking().ToListAsync();
+    var banks = await db.Banks.AsNoTracking().OrderBy(x => x.NameEn).ToListAsync();
+    var bankCur = banks.ToDictionary(x => x.Id, x => x.Currency);
+    var acctCurs = accounts.Where(a => a.Active).Select(a => new { entityId = a.EntityId, cur = bankCur.GetValueOrDefault(a.BankId) }).Distinct().ToList();
+
     object audit = Array.Empty<object>();
-    if (admin) audit = await db.Audit.AsNoTracking().OrderByDescending(a => a.Id).Take(3000)
+    if (admin || u.Role == Roles.AUDIT) audit = await db.Audit.AsNoTracking().OrderByDescending(a => a.Id).Take(3000)
         .Select(a => new { at = a.At, user = a.User, action = a.Action, entity = a.Entity, details = a.Details }).ToListAsync();
 
     object tgFeed = Array.Empty<object>(), alerts = Array.Empty<object>();
@@ -269,73 +403,215 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
         tgFeed = await db.TgMessages.AsNoTracking().Where(m => m.Kind == "event").OrderByDescending(m => m.Id).Take(30)
             .Select(m => new { at = m.At, text = m.Text, sent = m.Sent, error = m.Error }).ToListAsync();
         alerts = await db.TgMessages.AsNoTracking().Where(m => m.Kind == "digest" && m.Count > 0).OrderByDescending(m => m.Id).Take(10)
-            .Select(m => new { at = m.At, count = m.Count, ch = s.TelegramChannel, by = m.By, sent = m.Sent, error = m.Error }).ToListAsync();
+            .Select(m => new { at = m.At, count = m.Count, by = m.By, sent = m.Sent, error = m.Error }).ToListAsync();
     }
+
+    var benUse = (await db.Cheques.AsNoTracking().GroupBy(c => c.BenId).Select(g => new { id = g.Key, n = g.Count() }).ToListAsync())
+        .Concat(await db.Contracts.AsNoTracking().GroupBy(c => c.FinancierId).Select(g => new { id = g.Key, n = g.Count() }).ToListAsync())
+        .GroupBy(x => x.id).Select(g => new { id = g.Key, n = g.Sum(x => x.n) }).ToList();
 
     return Ok(new
     {
-        me = UserView(u), today = Clock.Today(s),
+        me = UserView(u, admin), anyAdmin, today = Clock.Today(s),
         departments = await db.Departments.AsNoTracking().OrderBy(d => d.Id).Select(d => new { id = d.Id, nameEn = d.NameEn, nameAr = d.NameAr }).ToListAsync(),
+        entities = await db.Entities.AsNoTracking().OrderBy(e => e.Id).Select(e => new { id = e.Id, nameEn = e.NameEn, nameAr = e.NameAr, funcCur = e.FuncCur }).ToListAsync(),
         users = uv,
         beneficiaries = await db.Beneficiaries.AsNoTracking().OrderBy(x => x.NameEn)
-            .Select(x => new { id = x.Id, type = x.Type, nameEn = x.NameEn, nameAr = x.NameAr, contact = x.Contact, phone = x.Phone, email = x.Email }).ToListAsync(),
-        benUse = await db.Cheques.AsNoTracking().GroupBy(c => c.BenId).Select(g => new { id = g.Key, n = g.Count() }).ToListAsync(),
-        rates, settings, cheques, audit, tgFeed, alerts
+            .Select(x => new { id = x.Id, code = x.Code ?? "", type = x.Type, nameEn = x.NameEn, nameAr = x.NameAr, contact = x.Contact, phone = x.Phone, email = x.Email }).ToListAsync(),
+        benUse, rates, settings, cheques, audit, tgFeed, alerts, acctCurs,
+        banks = seeAll ? banks.Select(x => (object)new { id = x.Id, nameEn = x.NameEn, nameAr = x.NameAr, currency = x.Currency, active = x.Active }).ToList() : new List<object>(),
+        accounts = seeAll ? accounts.Select(x => (object)new { id = x.Id, bankId = x.BankId, entityId = x.EntityId, description = x.Description, last4 = x.Last4, ledger = x.Ledger, active = x.Active, currency = bankCur.GetValueOrDefault(x.BankId) }).ToList() : new List<object>(),
+        books = seeAll ? (await db.Chequebooks.AsNoTracking().ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, from = x.FromNo, to = x.ToNo, active = x.Active, by = x.AddedBy, at = x.AddedAt }).ToList() : new List<object>(),
+        voided = seeAll ? (await db.VoidedNos.AsNoTracking().OrderByDescending(v => v.Id).ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, number = x.Number, reason = x.Reason, by = x.By, at = x.At }).ToList() : new List<object>(),
+        contracts = seeAll ? (await db.Contracts.AsNoTracking().OrderBy(c => c.OpNo).ToListAsync()).Select(x => (object)new { id = x.Id, opNo = x.OpNo, financierId = x.FinancierId, entityId = x.EntityId, currency = x.Currency, principal = x.Principal, profit = x.Profit, termMonths = x.TermMonths, instalments = x.Instalments, startDate = x.StartDate, endDate = x.EndDate, notes = x.Notes, log = x.Log ?? "[]", by = x.CreatedBy, at = x.CreatedAt }).ToList() : new List<object>(),
+        posted = seeAll ? (await db.PostedEntries.AsNoTracking().ToListAsync()).Select(x => (object)new { key = x.Key, by = x.By, at = x.At }).ToList() : new List<object>()
     });
 });
 
-static object ChequeView(Cheque c) => new
+static object ChequeView(Cheque c, List<object> lines, List<object> files) => new
 {
-    id = c.Id, requesterId = c.RequesterId, deptId = c.DeptId, benId = c.BenId, amount = c.Amount, currency = c.Currency, dueDate = c.DueDate,
-    reason = c.Reason, status = c.Status, createdAt = c.CreatedAt,
-    approval = c.ApprovedBy == null ? null : new { by = c.ApprovedBy, at = c.ApprovedAt, payCur = c.PayCur, payAmt = c.PayAmt, fx = c.FxId },
-    cheque = c.ChequeNo == null ? null : new { no = c.ChequeNo, bank = c.Bank, date = c.ChequeDate, by = c.IssuedBy, at = c.IssuedAt },
-    posted = c.IssuedBy == null ? null : new { by = c.IssuedBy, at = c.IssuedAt },
+    id = c.Id, seq = c.Seq, requesterId = c.RequesterId, deptId = c.DeptId, benId = c.BenId, entityId = c.EntityId, amount = c.Amount, currency = c.Currency,
+    payCur = c.PayCur ?? c.Currency, payAmt = c.PayAmt, dueDate = c.DueDate, reason = c.Reason, status = c.Status, createdAt = c.CreatedAt,
+    opType = c.OpType ?? "Other", purpose = c.Purpose ?? "Payment", related = c.Related, docType = c.DocType, docNo = c.DocNo, docDate = c.DocDate,
+    project = c.Project, counterAcct = c.CounterAcct, remainDate = c.RemainDate, poaSettleDate = c.PoaSettleDate,
+    recipientType = c.RecipientType ?? "Beneficiary", recipientName = c.RecipientName, payMethod = c.PayMethod ?? "Cheque", priority = c.Priority ?? "Normal", priorityReason = c.PriorityReason,
+    priorPaid = c.PriorPaid, priorDate = c.PriorDate, priorMethod = c.PriorMethod, priorRef = c.PriorRef,
+    appr = c.ApprovedBy == null ? null : new { by = c.ApprovedBy, byId = c.ApprovedById, at = c.ApprovedAt, rateId = c.FxId, rateDate = c.ApprRateDate, qar = c.ApprQar, sdg = c.ApprSdg, src = c.ApprSrc, rateBy = c.ApprRateBy, usdEq = c.UsdEq, funcCur = c.FuncCur, funcVal = c.FuncVal, funcPrincipal = c.FuncPrincipal },
+    need2 = c.Need2, need2Why = c.Need2Why,
+    appr2 = c.Appr2By == null ? null : new { by = c.Appr2By, byId = c.Appr2ById, at = c.Appr2At },
+    issue = c.IssuedBy == null ? null : new { accountId = c.AccountId, no = c.ChequeNo, bank = c.Bank, date = c.ChequeDate, by = c.IssuedBy, byId = c.IssuedById, at = c.IssuedAt, rateId = c.IssueRateId, rateDate = c.IssueRateDate, qar = c.IssueQar, sdg = c.IssueSdg, src = c.IssueSrc, rateBy = c.IssueRateBy, fxDiff = c.IssueFxDiff, carry = c.CarryFunc },
     received = c.ReceivedBy == null ? null : new { by = c.ReceivedBy, at = c.ReceivedAt },
     delivered = c.DeliveredBy == null ? null : new { by = c.DeliveredBy, at = c.DeliveredAt, to = c.DeliveredTo },
-    closed = c.ClosedStatus == null ? null : new { status = c.ClosedStatus, by = c.ClosedBy, at = c.ClosedAt, reason = c.ClosedReason },
-    solved = c.SolvedBy == null ? null : new { by = c.SolvedBy, at = c.SolvedAt, note = c.SolvedNote },
-    rejected = c.RejectedBy == null ? null : new { by = c.RejectedBy, at = c.RejectedAt, reason = c.RejectReason }
+    closed = c.ClosedStatus == null ? null : new { status = c.ClosedStatus, by = c.ClosedBy, byId = c.ClosedById, at = c.ClosedAt, reason = c.ClosedReason, rateId = c.ClearRateId, rateDate = c.ClearRateDate, qar = c.ClearQar, sdg = c.ClearSdg, src = c.ClearSrc, rateBy = c.ClearRateBy, usdEq = c.ClearUsdEq, funcVal = c.ClearFuncVal, fxDiff = c.ClearFxDiff },
+    solved = c.SolvedBy == null ? null : new { by = c.SolvedBy, at = c.SolvedAt, note = c.SolvedNote, method = c.SolveMethod },
+    rejected = c.RejectedBy == null ? null : new { by = c.RejectedBy, at = c.RejectedAt, reason = c.RejectReason },
+    poa = c.PoaSettledBy == null ? null : new { by = c.PoaSettledBy, at = c.PoaSettledAt, reference = c.PoaRef },
+    lines, files
 };
+
+// ---------- attachments ----------
+app.MapGet("/api/file/{id:int}", async (int id, HttpContext ctx, AppDb db) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Results.StatusCode(401);
+    var f = await db.Attachments.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id);
+    if (f == null) return Results.NotFound();
+    var c = await db.Cheques.AsNoTracking().FirstOrDefaultAsync(x => x.Id == f.ChequeId);
+    if (c == null || (!Roles.SeeAll(u.Role) && c.RequesterId != u.Id)) return Results.NotFound();
+    return Results.File(f.Data ?? Array.Empty<byte>(), string.IsNullOrEmpty(f.ContentType) ? "application/octet-stream" : f.ContentType, f.FileName);
+});
 
 // ---------- cron (for free-plan wake-up, e.g. cron-job.org) ----------
 app.MapGet("/api/cron/{key}", async (string key, AppDb db, SettingsStore ss, Notifier nf) =>
 {
     var s = await ss.Get(db);
-    if (string.IsNullOrEmpty(s.CronKey) || !CryptographicOperations.FixedTimeEquals(System.Text.Encoding.UTF8.GetBytes(key ?? ""), System.Text.Encoding.UTF8.GetBytes(s.CronKey)))
+    if (string.IsNullOrEmpty(s.CronKey) || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(key ?? ""), Encoding.UTF8.GetBytes(s.CronKey)))
         return Results.NotFound();
     await nf.DailyIfDue(db);
     return Results.Text("ok");
 });
 
 // ---------- actions ----------
-app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Notifier nf, Telegram tg, JsonElement b) =>
+app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Notifier nf, Telegram tg, Mailer mail, JsonElement b) =>
 {
     var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
     var a = Str(b, "action");
     var me = u.FullName;
+    var anyAdmin = await AnyAdmin(db);
+    var admin = IsAdmin(u, anyAdmin);
+    if (u.Role == Roles.AUDIT && a != "setLang") return Err("Auditors can view everything but cannot change anything.", 403);
     try
     {
         switch (a)
         {
-            // ----- cheque cycle -----
+            // ===================== cheque cycle =====================
             case "submitReq":
             {
-                var benId = Int(b, "benId"); var amt = Dec(b, "amount"); var cur = Str(b, "currency"); var due = Str(b, "dueDate"); var rsn = Str(b, "reason");
-                if (!await db.Beneficiaries.AnyAsync(x => x.Id == benId)) return Err("Choose a beneficiary.");
-                if (amt <= 0) return Err("Enter a valid amount.");
-                if (!new[] { "USD", "QAR", "SDG" }.Contains(cur)) return Err("Choose a currency.");
-                if (!Clock.ValidDate(due) || Clock.DaysUntil(s, due) < 0) return Err("Due date must be today or later.");
-                if (rsn.Length < 2) return Err("Enter the reason.");
+                if (!Roles.CanRequest(u.Role)) return Err("Your role cannot raise requests.", 403);
+                var ent = await db.Entities.FindAsync(Int(b, "entityId")); if (ent == null) return Err("Choose the entity.");
+                var opType = Str(b, "opType"); if (!Lists.OpTypes.Contains(opType)) return Err("Choose the operation type.");
+                var purpose = Str(b, "purpose"); if (!Lists.Purposes.Contains(purpose)) return Err("Choose the purpose: payment or guarantee.");
+                var benId = Int(b, "benId"); var ben = await db.Beneficiaries.FindAsync(benId); if (ben == null) return Err("Choose a beneficiary.");
+                var cur = Str(b, "currency"); var payCur = Str(b, "payCur");
+                if (!Lists.Curs.Contains(cur) || !Lists.Curs.Contains(payCur)) return Err("Choose the contract currency and the payment currency.");
+                var related = Bool(b, "related");
+                var financing = Lists.Financing.Contains(opType);
+
+                // line items
+                var lines = new List<ChequeLine>();
+                if (b.TryGetProperty("lines", out var ls) && ls.ValueKind == JsonValueKind.Array)
+                    foreach (var l in ls.EnumerateArray())
+                        lines.Add(new ChequeLine
+                        {
+                            OpNo = Trunc(Str(l, "opNo"), 50), InstNo = Int(l, "instNo"), Month = Trunc(Str(l, "month"), 7),
+                            Due = Math.Round(Dec(l, "due"), 2), PaidBefore = Math.Round(Dec(l, "paidBefore"), 2),
+                            Requested = Math.Round(Dec(l, "requested"), 2), Principal = Math.Round(Dec(l, "principal"), 2)
+                        });
+                if (lines.Count == 0) return Err("Add at least one line.");
+                if (lines.Count > 30) return Err("A request can have at most 30 lines.");
+                var partial = false;
+                for (var i = 0; i < lines.Count; i++)
+                {
+                    var l = lines[i]; var n = i + 1;
+                    if (l.Requested <= 0) return Err($"Line {n}: enter the amount requested now.");
+                    if (l.Due < 0 || l.PaidBefore < 0) return Err($"Line {n}: amounts cannot be negative.");
+                    if (l.Due > 0 && l.Requested > l.Due - l.PaidBefore) return Err($"Line {n}: requested now is more than what remains due ({Fmt.Money(l.Due - l.PaidBefore, cur)}).");
+                    if (l.Due > 0 && l.Requested < l.Due - l.PaidBefore) partial = true;
+                    if (l.Month.Length > 0 && !Regex.IsMatch(l.Month, @"^\d{4}-\d{2}$")) return Err($"Line {n}: month must look like 11/2026.");
+                    if (!financing) l.Principal = 0;
+                    if (l.Principal < 0 || l.Principal > l.Requested) return Err($"Line {n}: the principal part must be between 0 and the amount requested.");
+                    if (financing && l.OpNo.Length == 0) return Err($"Line {n}: enter the operation number from the contracts register.");
+                    if (Lists.SplitRequired.Contains(opType) && l.Principal <= 0) return Err($"Line {n}: separate the principal from the profit — enter the principal part.");
+                }
+                var total = lines.Sum(l => l.Requested);
+
+                // financing: each operation must be a registered contract of the same financier and currency
+                if (financing)
+                {
+                    foreach (var g in lines.GroupBy(l => l.OpNo))
+                    {
+                        var k = await db.Contracts.AsNoTracking().FirstOrDefaultAsync(x => x.OpNo == g.Key);
+                        if (k == null) return Err($"Operation {g.Key} is not in the contracts register. Finance must register it first.");
+                        if (k.FinancierId != benId) return Err($"Operation {g.Key} is registered for another financier.");
+                        if (k.Currency != cur) return Err($"Operation {g.Key} is registered in {k.Currency}, not {cur}.");
+                        var usedPrincipal = await (from ln in db.ChequeLines join ch in db.Cheques on ln.ChequeId equals ch.Id
+                                                   where ln.OpNo == g.Key && ch.Status != "Rejected" && ch.Status != "Cancelled"
+                                                   select (decimal?)ln.Principal).SumAsync() ?? 0m;
+                        var remaining = k.Principal - usedPrincipal;
+                        var want = g.Sum(l => l.Principal);
+                        if (want > remaining) return Err($"Operation {g.Key}: principal requested {Fmt.Money(want, cur)} is more than the remaining principal {Fmt.Money(remaining, cur)}.");
+                    }
+                }
+
+                // supporting document
+                var docType = Str(b, "docType"); var docNo = Str(b, "docNo"); var docDate = Str(b, "docDate");
+                if (docType.Length < 2 || docNo.Length < 1) return Err("Enter the document type and number.");
+                if (!Clock.ValidDate(docDate) || Clock.DaysUntil(s, docDate) > 0) return Err("The document date cannot be after today.");
+                var due = Str(b, "dueDate"); if (!Clock.ValidDate(due) || Clock.DaysUntil(s, due) < 0) return Err("The due date must be today or later.");
+                var remain = Str(b, "remainDate");
+                if (partial && (!Clock.ValidDate(remain) || Clock.DaysUntil(s, remain) < 0)) return Err("This is a partial payment: enter the date for the remaining balance.");
+                if (!partial) remain = "";
+                var poaDate = Str(b, "poaSettleDate");
+                if (opType == Lists.Poa && (!Clock.ValidDate(poaDate) || Clock.DaysUntil(s, poaDate) < 0)) return Err("Payment on account: enter the date it will be settled.");
+                if (opType != Lists.Poa) poaDate = "";
+                var recipientType = Str(b, "recipientType") == "Other" ? "Other" : "Beneficiary";
+                var recipientName = Str(b, "recipientName");
+                if (recipientType == "Other" && recipientName.Length < 2) return Err("Enter the name of the person who will receive the cheque.");
+                var priority = Str(b, "priority") == "Urgent" ? "Urgent" : "Normal"; var priorityReason = Str(b, "priorityReason");
+                if (priority == "Urgent" && priorityReason.Length < 3) return Err("Explain why the request is urgent.");
+                var priorPaid = Bool(b, "priorPaid"); var priorDate = Str(b, "priorDate"); var priorMethod = Str(b, "priorMethod"); var priorRef = Str(b, "priorRef");
+                if (priorPaid && (!Clock.ValidDate(priorDate) || Clock.DaysUntil(s, priorDate) > 0 || priorMethod.Length < 2 || priorRef.Length < 1))
+                    return Err("Payment made before the request: enter its date, method and reference.");
+                if (!await (from ac in db.BankAccounts join bk in db.Banks on ac.BankId equals bk.Id where ac.EntityId == ent.Id && ac.Active && bk.Currency == payCur select ac.Id).AnyAsync())
+                    return Err($"{ent.NameEn} has no active bank account in {payCur}. Ask the CFO to add one, or choose another payment currency.");
+
+                // attachments
+                var uploads = new List<Attachment>();
+                if (b.TryGetProperty("files", out var fl) && fl.ValueKind == JsonValueKind.Array)
+                    foreach (var f in fl.EnumerateArray())
+                    {
+                        var kind = Str(f, "kind"); if (kind != "doc" && kind != "auth" && kind != "prior") kind = "doc";
+                        var type = Str(f, "type").ToLowerInvariant(); var name = Trunc(Str(f, "name"), 200);
+                        if (!new[] { "application/pdf", "image/jpeg", "image/png", "image/webp" }.Contains(type)) return Err($"{name}: only PDF, JPG, PNG or WEBP files.");
+                        byte[] data;
+                        try { data = Convert.FromBase64String(Str(f, "data", false)); } catch { return Err($"{name}: the file could not be read."); }
+                        if (data.Length == 0) return Err($"{name} is empty.");
+                        if (data.Length > 10 * 1024 * 1024) return Err($"{name} is larger than 10 MB.");
+                        uploads.Add(new Attachment { Kind = kind, FileName = name, ContentType = type, Size = data.Length, Data = data, By = me, At = Clock.Stamp(s) });
+                    }
+                if (uploads.Count > 5) return Err("Attach at most 5 files.");
+                if (!uploads.Any(x => x.Kind == "doc")) return Err("Attach the supporting document.");
+                if (recipientType == "Other" && !uploads.Any(x => x.Kind == "auth")) return Err("Attach the authorisation letter for the other recipient.");
+
+                // duplicate warning (same financier, operation and instalment)
+                if (!Bool(b, "confirmDup"))
+                    foreach (var l in lines.Where(x => x.OpNo.Length > 0))
+                    {
+                        var dup = await (from ln in db.ChequeLines join ch in db.Cheques on ln.ChequeId equals ch.Id
+                                         where ch.BenId == benId && ln.OpNo == l.OpNo && ln.InstNo == l.InstNo && ch.Status != "Rejected" && ch.Status != "Cancelled"
+                                         select ch.Id).FirstOrDefaultAsync();
+                        if (dup != null) return Ok(new { ok = false, dup = true, error = $"{dup} already requests operation {l.OpNo}, instalment {l.InstNo} for this beneficiary. Submit anyway?" });
+                    }
+
                 for (var attempt = 0; attempt < 5; attempt++)
                 {
                     var seq = (await db.Cheques.MaxAsync(c => (int?)c.Seq) ?? 0) + 1;
-                    var c = new Cheque { Id = "CHQ-" + seq.ToString("0000", CultureInfo.InvariantCulture), Seq = seq, RequesterId = u.Id, DeptId = u.DeptId, BenId = benId, Amount = Math.Round(amt, 2), Currency = cur, DueDate = due, Reason = Trunc(rsn, 1000), Status = "Pending", CreatedAt = Clock.Stamp(s) };
+                    var c = new Cheque
+                    {
+                        Id = "CHQ-" + seq.ToString("0000", CultureInfo.InvariantCulture), Seq = seq, RequesterId = u.Id, DeptId = u.DeptId, BenId = benId,
+                        Amount = total, Currency = cur, PayCur = payCur, DueDate = due, Reason = Trunc(Str(b, "reason"), 1000), Status = "Pending", CreatedAt = Clock.Stamp(s),
+                        EntityId = ent.Id, FuncCur = ent.FuncCur, OpType = opType, Purpose = purpose, Related = related,
+                        DocType = Trunc(docType, 60), DocNo = Trunc(docNo, 60), DocDate = docDate, Project = Trunc(Str(b, "project"), 100), CounterAcct = Trunc(Str(b, "counterAcct"), 60),
+                        RemainDate = remain, PoaSettleDate = poaDate, RecipientType = recipientType, RecipientName = recipientType == "Other" ? Trunc(recipientName, 150) : null,
+                        PayMethod = "Cheque", Priority = priority, PriorityReason = priority == "Urgent" ? Trunc(priorityReason, 300) : null,
+                        PriorPaid = priorPaid, PriorDate = priorPaid ? priorDate : null, PriorMethod = priorPaid ? Trunc(priorMethod, 60) : null, PriorRef = priorPaid ? Trunc(priorRef, 100) : null,
+                        DupConfirmed = Bool(b, "confirmDup")
+                    };
                     db.Cheques.Add(c);
-                    var ben = await db.Beneficiaries.FindAsync(benId);
-                    Log(db, s, me, "Request created", c.Id, $"{Fmt.Money(c.Amount, cur)} to {ben?.NameEn}, due {due}");
+                    foreach (var l in lines) { l.ChequeId = c.Id; db.ChequeLines.Add(l); }
+                    foreach (var f in uploads) { f.ChequeId = c.Id; db.Attachments.Add(f); }
+                    Log(db, s, me, "Request created", c.Id, $"{Fmt.Money(total, cur)} to {ben.NameEn} · {opType} · {ent.NameEn}, due {Fmt.D(due)}");
                     try { await db.SaveChangesAsync(); return Ok(new { ok = true, id = c.Id }); }
                     catch (DbUpdateException) { db.ChangeTracker.Clear(); await Task.Delay(150 * (attempt + 1)); }
                 }
@@ -344,61 +620,111 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
             case "cancelReq":
             {
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.Status != "Pending" || c.RequesterId != u.Id) return Err("Only your own pending requests can be cancelled.");
+                if (c.Status != "Pending" || c.RequesterId != u.Id) return Err("You can cancel only your own request, and only while it waits for the CFO.");
                 c.Status = "Cancelled"; Log(db, s, me, "Cancelled", c.Id, "");
                 return await Save(db, c.Id);
             }
             case "approve":
             {
-                if (u.Role != Roles.CFO) return Err("Only the CFO can approve.", 403);
+                if (u.Role != Roles.CFO) return Err("Only the CFO gives the first approval.", 403);
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.Status != "Pending") return Err($"{c.Id} was already {c.Status.ToLowerInvariant()} by someone else. The screen will refresh.");
-                var r = await db.Rates.OrderByDescending(x => x.Date).FirstOrDefaultAsync();
-                if (r == null) return Err("No exchange rate yet. Enter today's rate on the Exchange Rates page first.");
-                var to = Str(b, "payCur"); if (!new[] { "USD", "QAR", "SDG" }.Contains(to)) to = c.Currency;
-                decimal PerUsd(string k) => k == "USD" ? 1m : k == "QAR" ? r.QAR : r.SDG;
-                var v = Math.Round(c.Amount / PerUsd(c.Currency) * PerUsd(to), 2);
-                c.Status = "Approved"; c.ApprovedBy = me; c.ApprovedAt = Clock.Stamp(s); c.PayCur = to; c.PayAmt = v; c.FxId = r.Id;
-                Log(db, s, me, "Approved", c.Id, $"Pay {Fmt.Money(v, to)} (requested {Fmt.Money(c.Amount, c.Currency)}) · {r.Id} locked");
-                var res = await Save(db, c.Id); await nf.Event(db, s, c, "approved", null, me); return res;
+                if (c.Status != "Pending") return Err($"{c.Id} is no longer waiting for the CFO. The screen will refresh.");
+                if (c.RequesterId == u.Id) return Err("You raised this request, so you cannot approve it. Another CFO must approve it.");
+                var docDate = string.IsNullOrEmpty(c.DocDate) ? c.CreatedAt.Substring(0, 10) : c.DocDate;
+                var r = await RateOn(db, docDate);
+                if (r == null) return Err($"There is no exchange rate on or before the document date ({Fmt.D(docDate)}). Finance must enter it first.");
+                var funcCur = string.IsNullOrEmpty(c.FuncCur) ? "SDG" : c.FuncCur;
+                var principal = await db.ChequeLines.Where(l => l.ChequeId == c.Id).SumAsync(l => (decimal?)l.Principal) ?? 0m;
+                c.FxId = r.Id; c.ApprRateDate = r.Date; c.ApprQar = r.QAR; c.ApprSdg = r.SDG; c.ApprSrc = r.Source ?? ""; c.ApprRateBy = r.SetBy;
+                c.UsdEq = Fx.Round(Fx.Conv(c.Amount, c.Currency, "USD", r.QAR, r.SDG), "USD");
+                c.FuncCur = funcCur;
+                c.FuncVal = Fx.Round(Fx.Conv(c.Amount, c.Currency, funcCur, r.QAR, r.SDG), funcCur);
+                c.FuncPrincipal = Fx.Round(Fx.Conv(principal, c.Currency, funcCur, r.QAR, r.SDG), funcCur);
+                c.ApprovedBy = me; c.ApprovedById = u.Id; c.ApprovedAt = Clock.Stamp(s);
+                if ((c.PayCur ?? c.Currency) == c.Currency) { c.PayCur = c.Currency; c.PayAmt = c.Amount; }
+                var why = new List<string>();
+                if (c.UsdEq > s.SecondLimitUsd) why.Add($"above the {s.SecondLimitUsd.ToString("N0", CultureInfo.InvariantCulture)} USD limit");
+                if (c.Related) why.Add("related party");
+                if (c.PriorPaid) why.Add("paid before the request");
+                c.Need2 = why.Count > 0; c.Need2Why = string.Join(", ", why);
+                c.Status = c.Need2 ? "Pending2" : "Approved";
+                Log(db, s, me, "Approved", c.Id, $"Rate {r.Id} ({Fmt.D(r.Date)}) locked · {Fmt.Money(c.UsdEq.Value, "USD")} · {Fmt.Money(c.FuncVal.Value, funcCur)}{(c.Need2 ? " · second approval needed: " + c.Need2Why : "")}");
+                var res = await Save(db, c.Id); await nf.Event(db, s, c, "approved", c.Need2 ? "needs second approval: " + c.Need2Why : null, me); return res;
+            }
+            case "approve2":
+            {
+                if (u.Role != Roles.TOP) return Err("Only Top Management gives the second approval.", 403);
+                var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
+                if (c.Status != "Pending2") return Err($"{c.Id} is not waiting for a second approval.");
+                if (c.RequesterId == u.Id) return Err("You raised this request, so you cannot give its second approval.");
+                if (c.ApprovedById == u.Id) return Err("You gave the first approval, so you cannot give the second one.");
+                c.Status = "Approved"; c.Appr2By = me; c.Appr2ById = u.Id; c.Appr2At = Clock.Stamp(s);
+                Log(db, s, me, "Second approval", c.Id, c.Need2Why);
+                var res = await Save(db, c.Id); await nf.Event(db, s, c, "approved2", null, me); return res;
             }
             case "reject":
             {
-                if (u.Role != Roles.CFO) return Err("Only the CFO can reject.", 403);
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.Status != "Pending") return Err($"{c.Id} is no longer pending.");
-                var rs = Str(b, "reason"); if (rs.Length < 2) return Err("Enter a rejection reason.");
+                if (!((c.Status == "Pending" && u.Role == Roles.CFO) || (c.Status == "Pending2" && u.Role == Roles.TOP)))
+                    return Err(c.Status == "Pending2" ? "Only Top Management can reject at the second approval." : c.Status == "Pending" ? "Only the CFO can reject at this stage." : $"{c.Id} is no longer waiting for approval.", 403);
+                var rs = Str(b, "reason"); if (rs.Length < 2) return Err("Enter the rejection reason.");
                 c.Status = "Rejected"; c.RejectedBy = me; c.RejectedAt = Clock.Stamp(s); c.RejectReason = Trunc(rs, 500);
                 Log(db, s, me, "Rejected", c.Id, rs);
                 var res = await Save(db, c.Id); await nf.Event(db, s, c, "rejected", "reason: " + rs, me); return res;
             }
             case "issue":
             {
-                if (!Roles.Finance(u.Role)) return Err("Only Finance or the CFO can issue cheques.", 403);
+                if (u.Role != Roles.FIN) return Err("Only Finance issues cheques.", 403);
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.Status != "Approved") return Err($"{c.Id} is not waiting to be issued (now: {c.Status}).");
-                var no = Str(b, "no"); var bank = Str(b, "bank"); var dt = Str(b, "date");
-                if (no.Length < 1 || bank.Length < 2 || !Clock.ValidDate(dt)) return Err("Cheque number, bank and date are required.");
+                if (c.Status != "Approved") return Err($"{c.Id} is not waiting to be issued.");
+                if (c.RequesterId == u.Id) return Err("You raised this request, so another Finance member must issue its cheque.");
+                var acc = await db.BankAccounts.FindAsync(Int(b, "accountId")); if (acc == null || !acc.Active) return Err("Choose an active bank account.");
+                var bank = await db.Banks.FindAsync(acc.BankId);
+                var payCur = c.PayCur ?? c.Currency;
+                if (acc.EntityId != c.EntityId) return Err("This account belongs to another entity.");
+                if (bank == null || bank.Currency != payCur) return Err($"Choose an account in {payCur}, the payment currency.");
+                var noText = Str(b, "no"); if (!long.TryParse(noText, NumberStyles.None, CultureInfo.InvariantCulture, out var no) || no <= 0) return Err("Enter the cheque number (digits only).");
+                if (!await db.Chequebooks.AnyAsync(k => k.AccountId == acc.Id && k.Active && k.FromNo <= no && k.ToNo >= no)) return Err($"Number {noText} is not in any chequebook of this account.");
+                if (await db.VoidedNos.AnyAsync(v => v.AccountId == acc.Id && v.Number == no)) return Err($"Number {noText} was voided for this account.");
+                var noStr = no.ToString(CultureInfo.InvariantCulture);
+                if (await db.Cheques.AnyAsync(x => x.Id != c.Id && x.AccountId == acc.Id && x.ChequeNo != null && (x.ChequeNo == noStr || x.ChequeNo == noText)))
+                    return Err($"Number {noText} is already used on this account.");
+                var dt = Str(b, "date"); if (!Clock.ValidDate(dt)) return Err("Enter the cheque date.");
+                var funcCur = string.IsNullOrEmpty(c.FuncCur) ? "SDG" : c.FuncCur;
+                if (payCur != c.Currency)
+                {
+                    var today = Clock.Today(s);
+                    var r = await RateOn(db, today);
+                    if (r == null) return Err("Enter today's exchange rate first: the cheque amount uses the issue-day rate.");
+                    c.IssueRateId = r.Id; c.IssueRateDate = r.Date; c.IssueQar = r.QAR; c.IssueSdg = r.SDG; c.IssueSrc = r.Source ?? ""; c.IssueRateBy = r.SetBy;
+                    c.PayAmt = Fx.Round(Fx.Conv(c.Amount, c.Currency, payCur, r.QAR, r.SDG), payCur);
+                    c.CarryFunc = Fx.Round(Fx.Conv(c.PayAmt.Value, payCur, funcCur, r.QAR, r.SDG), funcCur);
+                    c.IssueFxDiff = c.CarryFunc - (c.FuncVal ?? 0m);
+                }
+                else
+                {
+                    c.PayAmt = c.Amount; c.CarryFunc = c.FuncVal; c.IssueFxDiff = 0m;
+                }
                 var t = Clock.Stamp(s);
-                c.Status = "Posted"; c.ChequeNo = Trunc(no, 50); c.Bank = Trunc(bank, 150); c.ChequeDate = dt; c.IssuedBy = me; c.IssuedAt = t;
+                c.Status = "Posted"; c.AccountId = acc.Id; c.ChequeNo = Trunc(noText, 50); c.Bank = Trunc($"{bank.NameEn} ••{acc.Last4}", 150); c.ChequeDate = dt;
+                c.IssuedBy = me; c.IssuedById = u.Id; c.IssuedAt = t;
                 var req = await db.Users.FindAsync(c.RequesterId);
-                Log(db, s, me, "Cheque issued", c.Id, $"#{no}, {bank}, dated {dt} → {req?.FullName}");
-                if (!s.Banks.Contains(c.Bank, StringComparer.OrdinalIgnoreCase)) { s.Banks.Add(c.Bank); await ss.Save(db, s); }
+                Log(db, s, me, "Cheque issued", c.Id, $"#{noText} · {bank.NameEn} ••{acc.Last4} · {Fmt.Money(c.PayAmt.Value, payCur)} · dated {Fmt.D(dt)} → {req?.FullName}{(c.IssueRateId != null ? $" · rate {c.IssueRateId} locked, FX difference {Fmt.Money(c.IssueFxDiff ?? 0, funcCur)}" : "")}");
                 var res = await Save(db, c.Id); await nf.Event(db, s, c, "issued", "to " + req?.FullName, me); return res;
             }
             case "receive":
             {
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.RequesterId != u.Id) return Err("Only the requester can confirm receipt.", 403);
+                if (c.RequesterId != u.Id) return Err("Only the requester confirms receipt.", 403);
                 if (c.Status != "Posted") return Err("This cheque is not waiting for your receipt.");
                 c.Status = "Received"; c.ReceivedBy = me; c.ReceivedAt = Clock.Stamp(s);
-                Log(db, s, me, "Receipt confirmed", c.Id, "Requester received cheque");
+                Log(db, s, me, "Receipt confirmed", c.Id, "Requester received the cheque");
                 var res = await Save(db, c.Id); await nf.Event(db, s, c, "received", "⏳ not yet with the beneficiary", me); return res;
             }
             case "deliver":
             {
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.RequesterId != u.Id) return Err("Only the requester can confirm delivery.", 403);
+                if (c.RequesterId != u.Id) return Err("Only the requester confirms delivery.", 403);
                 if (c.Status != "Received") return Err("Confirm receipt first.");
                 var to = Str(b, "to"); var dt = Str(b, "date"); if (!Clock.ValidDate(dt) || Clock.DaysUntil(s, dt) > 0) dt = Clock.Today(s);
                 c.Status = "Delivered"; c.DeliveredBy = me; c.DeliveredAt = dt + " " + Clock.Now(s).ToString("HH:mm", CultureInfo.InvariantCulture); c.DeliveredTo = Trunc(to, 150);
@@ -408,74 +734,239 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
             }
             case "close":
             {
-                if (!Roles.Finance(u.Role)) return Err("Only Finance or the CFO can clear or return cheques.", 403);
+                if (!Roles.ClearOrReturn(u.Role)) return Err("Only Finance or the CFO record clearing or return.", 403);
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
                 if (c.Status != "Delivered") return Err("Only cheques with the beneficiary can be cleared or returned.");
-                if (Clock.DaysUntil(s, c.DueDate) > 0) return Err($"Can be cleared or returned from the due date ({c.DueDate}).");
+                if (c.IssuedById == u.Id) return Err("You issued this cheque, so someone else must record its clearing or return.");
+                if (Clock.DaysUntil(s, c.DueDate) > 0) return Err($"It can be cleared or returned from the due date ({Fmt.D(c.DueDate)}).");
                 var st = Str(b, "status"); var rs = Str(b, "reason");
                 if (st != "Cleared" && st != "Returned") return Err("Invalid status.");
                 if (st == "Returned" && rs.Length < 2) return Err("Enter the return reason.");
-                c.Status = st; c.ClosedStatus = st; c.ClosedBy = me; c.ClosedAt = Clock.Stamp(s); c.ClosedReason = Trunc(rs, 500);
-                Log(db, s, me, "Marked " + st.ToLowerInvariant(), c.Id, rs);
+                var r = await RateOn(db, Clock.Today(s));
+                if (r == null) return Err("Enter today's exchange rate first: it is saved with the cheque.");
+                var payCur = c.PayCur ?? c.Currency; var funcCur = string.IsNullOrEmpty(c.FuncCur) ? "SDG" : c.FuncCur; var amt = c.PayAmt ?? c.Amount;
+                c.ClearRateId = r.Id; c.ClearRateDate = r.Date; c.ClearQar = r.QAR; c.ClearSdg = r.SDG; c.ClearSrc = r.Source ?? ""; c.ClearRateBy = r.SetBy;
+                c.ClearUsdEq = Fx.Round(Fx.Conv(amt, payCur, "USD", r.QAR, r.SDG), "USD");
+                c.ClearFuncVal = Fx.Round(Fx.Conv(amt, payCur, funcCur, r.QAR, r.SDG), funcCur);
+                c.ClearFxDiff = st == "Cleared" ? c.ClearFuncVal - (c.CarryFunc ?? c.FuncVal ?? 0m) : 0m;
+                c.Status = st; c.ClosedStatus = st; c.ClosedBy = me; c.ClosedById = u.Id; c.ClosedAt = Clock.Stamp(s); c.ClosedReason = Trunc(rs, 500);
+                Log(db, s, me, "Marked " + st.ToLowerInvariant(), c.Id, $"rate {r.Id} saved{(st == "Cleared" ? " · realised FX difference " + Fmt.Money(c.ClearFxDiff ?? 0, funcCur) : "")}{(rs.Length > 0 ? " · " + rs : "")}");
                 var res = await Save(db, c.Id); await nf.Event(db, s, c, st.ToLowerInvariant(), rs.Length > 0 ? "reason: " + rs : null, me); return res;
             }
             case "solve":
             {
-                if (!Roles.Finance(u.Role)) return Err("Only Finance or the CFO can mark solved.", 403);
+                if (!Roles.ClearOrReturn(u.Role)) return Err("Only Finance or the CFO settle returned cheques.", 403);
                 var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
-                if (c.Status != "Returned") return Err("Only returned cheques can be solved.");
-                var n = Str(b, "note"); if (n.Length < 2) return Err("Describe how it was solved.");
-                c.Status = "Solved"; c.SolvedBy = me; c.SolvedAt = Clock.Stamp(s); c.SolvedNote = Trunc(n, 500);
-                Log(db, s, me, "Returned cheque solved", c.Id, n);
-                var res = await Save(db, c.Id); await nf.Event(db, s, c, "solved", n, me); return res;
+                if (c.Status != "Returned") return Err("Only returned cheques can be settled.");
+                var m = Str(b, "method"); if (!Lists.SolveMethods.Contains(m)) return Err("Choose how it was settled.");
+                var n = Str(b, "note"); if (n.Length < 2) return Err("Add a short note, e.g. the new cheque or transfer reference.");
+                c.Status = "Solved"; c.SolvedBy = me; c.SolvedAt = Clock.Stamp(s); c.SolvedNote = Trunc(n, 500); c.SolveMethod = m;
+                Log(db, s, me, "Returned cheque settled", c.Id, m + " · " + n);
+                var res = await Save(db, c.Id); await nf.Event(db, s, c, "solved", m + " · " + n, me); return res;
+            }
+            case "settlePoa":
+            {
+                if (u.Role != Roles.FIN) return Err("Only Finance settles payments on account.", 403);
+                var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
+                if (c.OpType != Lists.Poa) return Err("This is not a payment on account.");
+                if (!new[] { "Posted", "Received", "Delivered", "Cleared" }.Contains(c.Status)) return Err("The cheque must be issued before the payment on account is settled.");
+                if (c.PoaSettledBy != null) return Err("Already settled.");
+                var rf = Str(b, "reference"); if (rf.Length < 2) return Err("Enter the invoice or document that settles it.");
+                c.PoaSettledBy = me; c.PoaSettledAt = Clock.Stamp(s); c.PoaRef = Trunc(rf, 150);
+                Log(db, s, me, "Payment on account settled", c.Id, rf);
+                return await Save(db, c.Id);
             }
 
-            // ----- exchange rates -----
+            // ===================== exchange rates =====================
             case "saveRate":
             {
-                if (!Roles.Finance(u.Role)) return Err("Only Finance or the CFO can set rates.", 403);
-                var dt = Str(b, "date"); var q = Dec(b, "QAR"); var sd = Dec(b, "SDG");
-                if (!Clock.ValidDate(dt) || Clock.DaysUntil(s, dt) > 0) return Err("Rate date can't be in the future.");
+                if (u.Role != Roles.FIN) return Err("Only Finance enters exchange rates.", 403);
+                var dt = Str(b, "date"); var q = Dec(b, "QAR"); var sd = Dec(b, "SDG"); var src = Str(b, "source");
+                if (!Clock.ValidDate(dt) || Clock.DaysUntil(s, dt) > 0) return Err("The rate date cannot be in the future.");
                 if (q <= 0 || sd <= 0) return Err("Enter both rates.");
+                if (src.Length < 2) return Err("Enter the source of the rate.");
                 var id = "FX-" + dt.Replace("-", "");
-                if (await db.Cheques.AnyAsync(c => c.FxId == id)) return Err(id + " is already used by approved cheques — it cannot be changed.");
+                if (await db.Cheques.AnyAsync(c => c.FxId == id || c.IssueRateId == id || c.ClearRateId == id)) return Err(id + " is already used by cheques, so it is locked and cannot be changed.");
+                var prev = await db.Rates.AsNoTracking().Where(x => string.Compare(x.Date, dt) < 0).OrderByDescending(x => x.Date).FirstOrDefaultAsync();
+                if (prev != null && !Bool(b, "confirm"))
+                {
+                    var dq = prev.QAR > 0 ? Math.Abs(q - prev.QAR) / prev.QAR * 100m : 0m;
+                    var dsd = prev.SDG > 0 ? Math.Abs(sd - prev.SDG) / prev.SDG * 100m : 0m;
+                    if (dq > s.RateAlertPct || dsd > s.RateAlertPct)
+                    {
+                        var which = dsd >= dq ? $"SDG moved {dsd.ToString("0.0", CultureInfo.InvariantCulture)}% from {prev.SDG.ToString("N0", CultureInfo.InvariantCulture)}" : $"QAR moved {dq.ToString("0.0", CultureInfo.InvariantCulture)}% from {prev.QAR.ToString("0.####", CultureInfo.InvariantCulture)}";
+                        return Ok(new { ok = false, confirm = true, error = $"{which} on {Fmt.D(prev.Date)}, more than the {s.RateAlertPct.ToString("0.#", CultureInfo.InvariantCulture)}% alert. Check the figure, then confirm." });
+                    }
+                }
                 var r = await db.Rates.FindAsync(id);
-                if (r == null) db.Rates.Add(new Rate { Id = id, Date = dt, QAR = q, SDG = sd, SetBy = me, SetAt = Clock.Stamp(s) });
-                else { r.QAR = q; r.SDG = sd; r.SetBy = me; r.SetAt = Clock.Stamp(s); }
-                Log(db, s, me, "Set exchange rate", id, $"1 USD = {q.ToString(CultureInfo.InvariantCulture)} QAR, {sd.ToString(CultureInfo.InvariantCulture)} SDG");
+                if (r == null) db.Rates.Add(new Rate { Id = id, Date = dt, QAR = q, SDG = sd, SetBy = me, SetAt = Clock.Stamp(s), Source = Trunc(src, 100) });
+                else { r.QAR = q; r.SDG = sd; r.SetBy = me; r.SetAt = Clock.Stamp(s); r.Source = Trunc(src, 100); }
+                Log(db, s, me, "Set exchange rate", id, $"1 USD = {q.ToString(CultureInfo.InvariantCulture)} QAR, {sd.ToString(CultureInfo.InvariantCulture)} SDG · {src}{(Bool(b, "confirm") ? " · confirmed past the alert" : "")}");
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
 
-            // ----- beneficiaries -----
+            // ===================== beneficiaries =====================
             case "saveBen":
             {
                 var id = Int(b, "id");
-                if (id > 0 && !Roles.Bens(u.Role)) return Err("You can't edit beneficiaries.", 403);
-                var en = Str(b, "nameEn"); if (en.Length < 2) return Err("English name is required.");
-                var type = Str(b, "type"); if (!new[] { "Supplier", "Customer", "Employee", "Other" }.Contains(type)) type = "Other";
+                if (id > 0 && u.Role != Roles.FIN) return Err("Only Finance edits beneficiaries.", 403);
+                if (id == 0 && !Roles.CanRequest(u.Role)) return Err("Not allowed.", 403);
+                var en = Str(b, "nameEn"); if (en.Length < 2) return Err("The English name is required.");
+                var type = Str(b, "type"); if (!Lists.BenTypes.Contains(type)) type = "Other";
+                var code = Str(b, "code");
+                if (code.Length > 0 && await db.Beneficiaries.AnyAsync(x => x.Code == code && x.Id != id)) return Err("This code is already used.");
                 Beneficiary x;
                 if (id > 0) { x = await db.Beneficiaries.FindAsync(id); if (x == null) return Err("Not found."); }
                 else { x = new Beneficiary(); db.Beneficiaries.Add(x); }
                 x.Type = type; x.NameEn = Trunc(en, 200); x.NameAr = Trunc(Str(b, "nameAr"), 200); x.Contact = Trunc(Str(b, "contact"), 150); x.Phone = Trunc(Str(b, "phone"), 50); x.Email = Trunc(Str(b, "email"), 150);
                 await db.SaveChangesAsync();
-                Log(db, s, me, id > 0 ? "Beneficiary updated" : "Beneficiary added", "BEN-" + x.Id, en);
+                x.Code = code.Length > 0 ? Trunc(code, 30) : (string.IsNullOrEmpty(x.Code) ? "B-" + x.Id.ToString("0000", CultureInfo.InvariantCulture) : x.Code);
+                Log(db, s, me, id > 0 ? "Beneficiary updated" : "Beneficiary added", "BEN-" + x.Id, $"{x.Code} · {en} · {type}");
                 await db.SaveChangesAsync(); return Ok(new { ok = true, id = x.Id });
             }
             case "delBen":
             {
-                if (!Roles.Bens(u.Role)) return Err("You can't delete beneficiaries.", 403);
+                if (u.Role != Roles.FIN) return Err("Only Finance deletes beneficiaries.", 403);
                 var id = Int(b, "id");
-                if (await db.Cheques.AnyAsync(c => c.BenId == id)) return Err("Linked to cheques — cannot delete.");
+                if (await db.Cheques.AnyAsync(c => c.BenId == id)) return Err("Linked to cheques — it cannot be deleted.");
+                if (await db.Contracts.AnyAsync(c => c.FinancierId == id)) return Err("Linked to a contract — it cannot be deleted.");
                 var x = await db.Beneficiaries.FindAsync(id); if (x == null) return Err("Not found.");
                 db.Beneficiaries.Remove(x); Log(db, s, me, "Beneficiary deleted", "BEN-" + id, x.NameEn);
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
 
-            // ----- administration -----
+            // ===================== banks, accounts, chequebooks =====================
+            case "saveBank":
+            {
+                if (u.Role != Roles.CFO) return Err("Only the CFO manages banks.", 403);
+                var id = Int(b, "id"); var en = Str(b, "nameEn"); var cur = Str(b, "currency");
+                if (en.Length < 2) return Err("Enter the bank name.");
+                if (!Lists.Curs.Contains(cur)) return Err("Choose the currency.");
+                Bank x;
+                if (id > 0) { x = await db.Banks.FindAsync(id); if (x == null) return Err("Not found."); }
+                else { x = new Bank(); db.Banks.Add(x); }
+                if (id > 0 && x.Currency != cur && await (from ac in db.BankAccounts join ch in db.Cheques on (int?)ac.Id equals ch.AccountId where ac.BankId == id select ch.Id).AnyAsync())
+                    return Err("Cheques were issued from this bank's accounts, so its currency cannot change.");
+                x.NameEn = Trunc(en, 150); x.NameAr = Trunc(Str(b, "nameAr"), 150); x.Currency = cur; x.Active = id == 0 || Bool(b, "active");
+                Log(db, s, me, id > 0 ? "Bank updated" : "Bank added", "BANK", $"{en} · {cur}");
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "saveAccount":
+            {
+                if (u.Role != Roles.CFO) return Err("Only the CFO manages bank accounts.", 403);
+                var id = Int(b, "id"); var bankId = Int(b, "bankId"); var entId = Int(b, "entityId"); var l4 = Str(b, "last4");
+                if (!await db.Banks.AnyAsync(x => x.Id == bankId)) return Err("Choose the bank.");
+                if (!await db.Entities.AnyAsync(x => x.Id == entId)) return Err("Choose the entity.");
+                if (!Regex.IsMatch(l4, @"^\d{4}$")) return Err("Enter only the last 4 digits of the account number.");
+                BankAccount x;
+                if (id > 0) { x = await db.BankAccounts.FindAsync(id); if (x == null) return Err("Not found."); }
+                else { x = new BankAccount(); db.BankAccounts.Add(x); }
+                x.BankId = bankId; x.EntityId = entId; x.Last4 = l4; x.Description = Trunc(Str(b, "description"), 150); x.Ledger = Trunc(Str(b, "ledger"), 30); x.Active = id == 0 || Bool(b, "active");
+                Log(db, s, me, id > 0 ? "Bank account updated" : "Bank account added", "ACCOUNT", $"••{l4} · {x.Description}");
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "saveBook":
+            {
+                if (u.Role != Roles.CFO) return Err("Only the CFO manages chequebooks.", 403);
+                var id = Int(b, "id"); var accId = Int(b, "accountId");
+                if (!await db.BankAccounts.AnyAsync(x => x.Id == accId)) return Err("Choose the account.");
+                if (!long.TryParse(Str(b, "from"), NumberStyles.None, CultureInfo.InvariantCulture, out var from) || !long.TryParse(Str(b, "to"), NumberStyles.None, CultureInfo.InvariantCulture, out var to) || from <= 0 || to < from)
+                    return Err("Enter the first and last cheque numbers (digits, last ≥ first).");
+                if (to - from > 100000) return Err("A chequebook cannot have more than 100,000 numbers.");
+                if (await db.Chequebooks.AnyAsync(k => k.Id != id && k.AccountId == accId && k.FromNo <= to && k.ToNo >= from)) return Err("This range overlaps another chequebook of the same account.");
+                Chequebook x;
+                if (id > 0) { x = await db.Chequebooks.FindAsync(id); if (x == null) return Err("Not found."); }
+                else { x = new Chequebook { AddedBy = me, AddedAt = Clock.Stamp(s) }; db.Chequebooks.Add(x); }
+                x.AccountId = accId; x.FromNo = from; x.ToNo = to; x.Active = id == 0 || Bool(b, "active");
+                Log(db, s, me, id > 0 ? "Chequebook updated" : "Chequebook added", "BOOK", $"{from}–{to}");
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "voidNo":
+            {
+                if (!Roles.ClearOrReturn(u.Role)) return Err("Only Finance or the CFO record voided numbers.", 403);
+                var accId = Int(b, "accountId"); var rs = Str(b, "reason");
+                if (!long.TryParse(Str(b, "number"), NumberStyles.None, CultureInfo.InvariantCulture, out var no) || no <= 0) return Err("Enter the cheque number.");
+                if (rs.Length < 2) return Err("Enter why it was voided.");
+                if (!await db.Chequebooks.AnyAsync(k => k.AccountId == accId && k.FromNo <= no && k.ToNo >= no)) return Err("This number is not in a chequebook of the account.");
+                if (await db.VoidedNos.AnyAsync(v => v.AccountId == accId && v.Number == no)) return Err("Already voided.");
+                var noStr = no.ToString(CultureInfo.InvariantCulture);
+                if (await db.Cheques.AnyAsync(x => x.AccountId == accId && x.ChequeNo == noStr)) return Err("This number is already used by a cheque.");
+                db.VoidedNos.Add(new VoidedNo { AccountId = accId, Number = no, Reason = Trunc(rs, 300), By = me, At = Clock.Stamp(s) });
+                Log(db, s, me, "Cheque number voided", "ACCOUNT-" + accId, $"#{no} · {rs}");
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+
+            // ===================== contracts =====================
+            case "saveContract":
+            {
+                if (u.Role != Roles.FIN) return Err("Only Finance maintains the contracts register.", 403);
+                var id = Int(b, "id"); var op = Str(b, "opNo"); var finId = Int(b, "financierId"); var entId = Int(b, "entityId"); var cur = Str(b, "currency");
+                var pr = Math.Round(Dec(b, "principal"), 2); var pf = Math.Round(Dec(b, "profit"), 2); var term = Int(b, "termMonths"); var inst = Int(b, "instalments"); var start = Str(b, "startDate");
+                if (op.Length < 2) return Err("Enter the operation number.");
+                if (await db.Contracts.AnyAsync(x => x.OpNo == op && x.Id != id)) return Err($"Operation {op} is already registered.");
+                var fin = await db.Beneficiaries.FindAsync(finId); if (fin == null || fin.Type != "Financier") return Err("Choose the financier (a beneficiary of type Financier).");
+                if (!await db.Entities.AnyAsync(x => x.Id == entId)) return Err("Choose the entity.");
+                if (!Lists.Curs.Contains(cur)) return Err("Choose the currency.");
+                if (pr <= 0 || pf < 0) return Err("Enter the principal and the profit.");
+                if (term < 1 || inst < 1) return Err("Enter the term in months and the number of instalments.");
+                if (!Clock.ValidDate(start)) return Err("Enter the start date.");
+                Contract x;
+                if (id > 0)
+                {
+                    x = await db.Contracts.FindAsync(id); if (x == null) return Err("Not found.");
+                    var usedP = await (from ln in db.ChequeLines join ch in db.Cheques on ln.ChequeId equals ch.Id where ln.OpNo == x.OpNo && ch.Status != "Rejected" && ch.Status != "Cancelled" select (decimal?)ln.Principal).SumAsync() ?? 0m;
+                    if (pr < usedP) return Err($"Principal cannot be less than what was already requested ({Fmt.Money(usedP, x.Currency)}).");
+                    if (x.OpNo != op && usedP > 0) return Err("Requests already use this operation number, so it cannot change.");
+                }
+                else { x = new Contract { CreatedBy = me, CreatedAt = Clock.Stamp(s), Log = "[]" }; db.Contracts.Add(x); }
+                x.OpNo = Trunc(op, 50); x.FinancierId = finId; x.EntityId = entId; x.Currency = cur; x.Principal = pr; x.Profit = pf; x.TermMonths = term; x.Instalments = inst;
+                x.StartDate = start; x.EndDate = Clock.AddMonths(start, term); x.Notes = Trunc(Str(b, "notes"), 500);
+                x.Log = AddLog(x.Log, Clock.Stamp(s), me, id > 0 ? "Contract updated" : $"Contract registered · {Fmt.Money(pr, cur)} principal, {Fmt.Money(pf, cur)} profit, {term} months, {inst} instalments");
+                Log(db, s, me, id > 0 ? "Contract updated" : "Contract registered", "CONTRACT", op);
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "extendContract":
+            {
+                if (u.Role != Roles.FIN) return Err("Only Finance maintains the contracts register.", 403);
+                var x = await db.Contracts.FindAsync(Int(b, "id")); if (x == null) return Err("Not found.");
+                var add = Int(b, "months"); var inst = Int(b, "instalments"); var note = Str(b, "note");
+                if (add < 1) return Err("Enter how many months to extend.");
+                if (note.Length < 3) return Err("Add a note on the extension.");
+                x.TermMonths += add; x.EndDate = Clock.AddMonths(x.StartDate, x.TermMonths); if (inst > 0) x.Instalments = inst;
+                x.Log = AddLog(x.Log, Clock.Stamp(s), me, $"Extended by {add} months to {Fmt.D(x.EndDate)}{(inst > 0 ? $", {inst} instalments" : "")} · {note}");
+                Log(db, s, me, "Contract extended", "CONTRACT", $"{x.OpNo} · +{add} months · {note}");
+                await db.SaveChangesAsync();
+                return Ok(new { ok = true, alert = "Check the 10% test (IFRS 9 B3.3.6): if the present value of the new terms differs by 10% or more from the current carrying amount, treat it as a new contract." });
+            }
+
+            // ===================== journal entries =====================
+            case "postEntry":
+            case "unpostEntry":
+            {
+                if (u.Role != Roles.FIN) return Err("Only Finance posts journal entries.", 403);
+                var key = Str(b, "key");
+                if (!Regex.IsMatch(key, @"^((ISS|CLR|RET|POA)-CHQ-\d{4,}|(REV|RVR)-\d{8}-CHQ-\d{4,})$")) return Err("Unknown entry.");
+                var ex = await db.PostedEntries.FindAsync(key);
+                if (a == "postEntry")
+                {
+                    if (ex != null) return Err("Already marked as posted.");
+                    db.PostedEntries.Add(new PostedEntry { Key = key, By = me, At = Clock.Stamp(s) });
+                    Log(db, s, me, "Entry marked as posted", "ENTRY", key);
+                }
+                else
+                {
+                    if (ex == null) return Err("Not posted.");
+                    db.PostedEntries.Remove(ex);
+                    Log(db, s, me, "Entry unmarked", "ENTRY", key);
+                }
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+
+            // ===================== administration =====================
             case "saveDept":
             {
-                if (!Roles.Admin(u.Role)) return Err("Not allowed.", 403);
-                var id = Int(b, "id"); var en = Str(b, "nameEn"); if (en.Length < 2) return Err("English name is required.");
+                if (!admin) return Err("Only the System Admin manages departments.", 403);
+                var id = Int(b, "id"); var en = Str(b, "nameEn"); if (en.Length < 2) return Err("The English name is required.");
                 Department d;
                 if (id > 0) { d = await db.Departments.FindAsync(id); if (d == null) return Err("Not found."); }
                 else { d = new Department(); db.Departments.Add(d); }
@@ -484,48 +975,88 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
                 Log(db, s, me, id > 0 ? "Department updated" : "Department added", "DEP-" + d.Id, en);
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
+            case "saveEntity":
+            {
+                if (!admin) return Err("Only the System Admin manages entities.", 403);
+                var id = Int(b, "id"); var en = Str(b, "nameEn"); var fc = Str(b, "funcCur");
+                if (en.Length < 2) return Err("The English name is required.");
+                if (!Lists.Curs.Contains(fc)) return Err("Choose the functional currency.");
+                Entity e;
+                if (id > 0) { e = await db.Entities.FindAsync(id); if (e == null) return Err("Not found."); }
+                else { e = new Entity(); db.Entities.Add(e); }
+                if (id > 0 && e.FuncCur != fc && await db.Cheques.AnyAsync(c => c.EntityId == id && c.ApprovedBy != null))
+                    return Err("Approved cheques use this entity's functional currency, so it cannot change.");
+                e.NameEn = Trunc(en, 150); e.NameAr = Trunc(Str(b, "nameAr"), 150); e.FuncCur = fc;
+                Log(db, s, me, id > 0 ? "Entity updated" : "Entity added", "ENTITY", $"{en} · {fc}");
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "confirmFunc":
+            {
+                if (!admin) return Err("Not allowed.", 403);
+                s.FuncConfirmed = true; await ss.Save(db, s);
+                Log(db, s, me, "Functional currencies confirmed", "SETTINGS", ""); await db.SaveChangesAsync();
+                return Ok(new { ok = true });
+            }
             case "saveUser":
             {
-                if (!Roles.Admin(u.Role)) return Err("Not allowed.", 403);
+                if (!admin) return Err("Only the System Admin manages users.", 403);
                 var id = Int(b, "id"); var full = Str(b, "fullName"); var un = Str(b, "username").ToLowerInvariant(); var role = Str(b, "role"); var dep = Int(b, "deptId");
-                var active = Bool(b, "active"); var must = Bool(b, "mustChange"); var pw = Str(b, "password", false);
-                if (full.Length < 2) return Err("Full name is required.");
-                if (!System.Text.RegularExpressions.Regex.IsMatch(un, "^[a-z0-9._-]{3,}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore, no spaces.");
+                var email = Str(b, "email").ToLowerInvariant(); var lang = Str(b, "lang") == "ar" ? "ar" : "en";
+                var active = Bool(b, "active"); var must = Bool(b, "mustChange"); var twoFa = Bool(b, "twoFa"); var pw = Str(b, "password", false);
+                if (full.Length < 2) return Err("The full name is required.");
+                if (!Regex.IsMatch(un, "^[a-z0-9._-]{3,}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore, no spaces.");
+                if (!ValidEmail(email)) return Err("Email is required. It is used to reset the password.");
                 if (!Roles.All.Contains(role)) return Err("Choose a role.");
                 if (!await db.Departments.AnyAsync(d => d.Id == dep)) return Err("Choose a department.");
                 if (await db.Users.AnyAsync(x => x.Id != id && x.Username == un)) return Err("This username is already taken.");
+                if (await db.Users.AnyAsync(x => x.Id != id && x.Email == email)) return Err("This email is already used by another user.");
                 if (id == u.Id && !active) return Err("You cannot disable your own account.");
                 if (id == u.Id && role != u.Role) return Err("You cannot change your own role.");
+                if (twoFa && !Mailer.Ready(s)) return Err("Set up email first (Settings › Email): two-step verification sends the code by email.");
                 if (pw.Length > 0 || id == 0) { var pe = Pwd.Check(pw, s.Policy); if (pe != null) return Err(pe); }
                 AppUser x;
                 if (id > 0) { x = await db.Users.FindAsync(id); if (x == null) return Err("Not found."); }
                 else { x = new AppUser(); db.Users.Add(x); }
-                if (id > 0 && x.Role == Roles.CFO && role != Roles.CFO && !await db.Users.AnyAsync(y => y.Id != id && y.Role == Roles.CFO && y.Active))
+                if (id > 0 && x.Role == Roles.CFO && (role != Roles.CFO || !active) && !await db.Users.AnyAsync(y => y.Id != id && y.Role == Roles.CFO && y.Active))
                     return Err("At least one active CFO is required.");
-                x.FullName = Trunc(full, 150); x.Username = un; x.Role = role; x.DeptId = dep; x.Active = active; x.MustChange = must;
+                x.FullName = Trunc(full, 150); x.Username = un; x.Email = Trunc(email, 150); x.Lang = lang; x.Role = role; x.DeptId = dep; x.Active = active; x.MustChange = must; x.TwoFa = twoFa;
                 if (pw.Length > 0) { x.PwdHash = Pwd.Hash(pw); x.PwdChangedAt = Clock.Today(s); x.Failed = 0; x.LockedUntilUtc = null; }
                 await db.SaveChangesAsync();
                 var dn = (await db.Departments.FindAsync(dep))?.NameEn;
-                Log(db, s, me, id > 0 ? "User updated" : "User created", "USR-" + x.Id, $"{full} · {role} · {dn}{(pw.Length > 0 && id > 0 ? " · password reset" : "")}");
+                Log(db, s, me, id > 0 ? "User updated" : "User created", "USR-" + x.Id, $"{full} · {role} · {dn} · {email}{(twoFa ? " · two-step on" : "")}{(pw.Length > 0 && id > 0 ? " · password set" : "")}");
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
             case "unlockUser":
             {
-                if (!Roles.Admin(u.Role)) return Err("Not allowed.", 403);
+                if (!admin) return Err("Not allowed.", 403);
                 var x = await db.Users.FindAsync(Int(b, "id")); if (x == null) return Err("Not found.");
                 x.LockedUntilUtc = null; x.Failed = 0; Log(db, s, me, "Account unlocked", "USR-" + x.Id, x.FullName);
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
+            case "sendReset":
+            {
+                if (!admin) return Err("Not allowed.", 403);
+                var x = await db.Users.FindAsync(Int(b, "id")); if (x == null) return Err("Not found.");
+                var err = await SendReset(db, s, mail, x, BaseUrl(ctx));
+                if (err != null) return Err(err);
+                Log(db, s, me, "Password reset link sent", "USR-" + x.Id, x.Email);
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
+            case "setLang":
+            {
+                u.Lang = Str(b, "lang") == "ar" ? "ar" : "en";
+                await db.SaveChangesAsync(); return Ok(new { ok = true });
+            }
             case "saveSettings":
             {
-                if (!Roles.Admin(u.Role)) return Err("Not allowed.", 403);
+                if (!admin) return Err("Only the System Admin changes settings.", 403);
                 var sec = Str(b, "section");
                 if (sec == "alerts")
                 {
-                    var d = Int(b, "alertDays"); if (d < 1 || d > 90) return Err("Alert period must be 1–90 days.");
+                    var d = Int(b, "alertDays"); if (d < 1 || d > 90) return Err("The alert window must be 1–90 days.");
                     var t = Str(b, "alertTime"); if (!TimeSpan.TryParse(t, CultureInfo.InvariantCulture, out _)) return Err("Invalid time.");
-                    s.AlertDays = d; s.AlertTime = t;
-                    if (u.Role == Roles.CFO && b.TryGetProperty("tgEvents", out var ev) && ev.ValueKind == JsonValueKind.Object)
+                    s.AlertDays = d; s.AlertTime = t; s.HideTelegram = Bool(b, "hideTelegram");
+                    if (b.TryGetProperty("tgEvents", out var ev) && ev.ValueKind == JsonValueKind.Object)
                         foreach (var p in ev.EnumerateObject()) s.TgEvents[p.Name] = p.Value.ValueKind == JsonValueKind.True;
                 }
                 else if (sec == "policy")
@@ -537,30 +1068,61 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
                 }
                 else if (sec == "general")
                 {
-                    var c = Str(b, "company"); if (c.Length < 2) return Err("Company name is required.");
+                    var c = Str(b, "company"); if (c.Length < 2) return Err("The company name is required.");
                     s.Company = Trunc(c, 150);
-                    var rc = Str(b, "reportCurrency"); if (new[] { "USD", "QAR", "SDG" }.Contains(rc)) s.ReportCurrency = rc;
+                    var rc = Str(b, "reportCurrency"); if (Lists.Curs.Contains(rc)) s.ReportCurrency = rc;
                     var tz = Str(b, "timeZone"); if (!string.IsNullOrEmpty(tz)) { try { TimeZoneInfo.FindSystemTimeZoneById(tz); s.TimeZone = tz; } catch { return Err("Unknown time zone."); } }
                     if (b.TryGetProperty("logo", out var lg) && lg.ValueKind == JsonValueKind.String)
                     {
                         var l = lg.GetString() ?? "";
-                        if (l.Length > 400_000) return Err("Logo is too large (max about 250 KB).");
-                        if (l.Length > 0 && !l.StartsWith("data:image/", StringComparison.Ordinal)) return Err("Logo must be an image.");
+                        if (l.Length > 400_000) return Err("The logo is too large (max about 250 KB).");
+                        if (l.Length > 0 && !l.StartsWith("data:image/", StringComparison.Ordinal)) return Err("The logo must be an image.");
                         s.Logo = l;
                     }
+                }
+                else if (sec == "approval")
+                {
+                    var lim = Dec(b, "secondLimitUsd"); var pct = Dec(b, "rateAlertPct");
+                    if (lim <= 0) return Err("Enter the second-approval limit in USD.");
+                    if (pct <= 0 || pct > 100) return Err("Enter the rate alert percentage (for example 5).");
+                    s.SecondLimitUsd = Math.Round(lim, 2); s.RateAlertPct = Math.Round(pct, 2);
+                }
+                else if (sec == "accounts")
+                {
+                    string Acc(string k) => Trunc(Str(b, k), 30);
+                    var A = new AccountNos { Payables = Acc("payables"), Deferred = Acc("deferred"), FinPrincipal = Acc("finPrincipal"), FinProfit = Acc("finProfit"), Poa = Acc("poa"), FxDiff = Acc("fxDiff") };
+                    if (new[] { A.Payables, A.Deferred, A.FinPrincipal, A.FinProfit, A.Poa, A.FxDiff }.Any(x => x.Length == 0)) return Err("Enter all six account numbers.");
+                    s.Acc = A;
+                }
+                else if (sec == "smtp")
+                {
+                    var host = Str(b, "host"); var from = Str(b, "from").ToLowerInvariant();
+                    if (host.Length > 0 && !ValidEmail(from)) return Err("Enter the sender email address.");
+                    s.Smtp.Host = Trunc(host, 150); s.Smtp.Port = Math.Clamp(Int(b, "port"), 1, 65535); s.Smtp.User = Trunc(Str(b, "user"), 150);
+                    s.Smtp.From = Trunc(from, 150); s.Smtp.FromName = Trunc(Str(b, "fromName"), 100); s.Smtp.Ssl = Bool(b, "ssl");
+                    var pass = Str(b, "password", false); if (pass.Length > 0) ss.SetSmtpPass(s, pass);
+                    if (host.Length == 0) ss.SetSmtpPass(s, "");
                 }
                 else return Err("Unknown section.");
                 await ss.Save(db, s);
                 Log(db, s, me, "Settings changed", "SETTINGS", sec);
                 await db.SaveChangesAsync(); return Ok(new { ok = true });
             }
+            case "testEmail":
+            {
+                if (!admin) return Err("Not allowed.", 403);
+                if (string.IsNullOrWhiteSpace(u.Email)) return Err("Add your own email to your user first.");
+                var err = await mail.Send(s, u.Email, "ChequeTrack test email", Mailer.Layout(u.Lang == "ar", "Email works", "<p>ChequeTrack can now send password reset links and sign-in codes.</p>"));
+                if (err != null) return Err(err);
+                return Ok(new { ok = true });
+            }
             case "tgConnect":
             {
-                if (u.Role != Roles.CFO) return Err("Only the CFO manages Telegram.", 403);
+                if (!(admin || u.Role == Roles.CFO)) return Err("Only the CFO or the System Admin manage Telegram.", 403);
                 var ch = Str(b, "channel"); var tk = Str(b, "token");
-                if (!System.Text.RegularExpressions.Regex.IsMatch(ch, @"^(@[A-Za-z0-9_]{4,}|-100\d{6,})$")) return Err("Channel must look like @channelname or -100…");
+                if (!Regex.IsMatch(ch, @"^(@[A-Za-z0-9_]{4,}|-100\d{6,})$")) return Err("The channel must look like @channelname or -100…");
                 if (tk.Length == 0) tk = ss.Token(s);
-                if (!System.Text.RegularExpressions.Regex.IsMatch(tk ?? "", @"^\d{6,}:[A-Za-z0-9_-]{20,}$")) return Err("That does not look like a bot token (format 123456789:AA…).");
+                if (!Regex.IsMatch(tk ?? "", @"^\d{6,}:[A-Za-z0-9_-]{20,}$")) return Err("That does not look like a bot token (format 123456789:AA…).");
                 var err = await tg.Send(tk, ch, $"✅ <b>ChequeTrack connected</b>\nAlerts for {Fmt.H(s.Company)} will be posted here.");
                 if (err != null) return Err(err + " — check the token, the channel ID, and that the bot is an admin of the channel.");
                 s.TelegramChannel = ch; ss.SetToken(s, tk); await ss.Save(db, s);
@@ -569,7 +1131,7 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
             }
             case "tgDisconnect":
             {
-                if (u.Role != Roles.CFO) return Err("Only the CFO manages Telegram.", 403);
+                if (!(admin || u.Role == Roles.CFO)) return Err("Only the CFO or the System Admin manage Telegram.", 403);
                 ss.SetToken(s, ""); await ss.Save(db, s); Log(db, s, me, "Telegram disconnected", "SETTINGS", ""); await db.SaveChangesAsync();
                 return Ok(new { ok = true });
             }
@@ -594,6 +1156,25 @@ app.MapFallbackToFile("index.html");
 app.Run();
 
 // ---------- helpers ----------
+static void Log(AppDb db, AppSettings s, string user, string action, string entity, string details)
+    => db.Audit.Add(new AuditEntry { At = Clock.Stamp(s), User = user ?? "", Action = action ?? "", Entity = entity ?? "", Details = Trunc(details, 1000) });
+static string Trunc(string v, int n) => v == null ? "" : (v.Length > n ? v.Substring(0, n) : v);
+static string Sha(string v) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(v ?? ""))).ToLowerInvariant();
+static bool ValidEmail(string e) => !string.IsNullOrEmpty(e) && e.Length <= 150 && Regex.IsMatch(e, @"^[^@\s]+@[^@\s]+\.[^@\s]+$");
+static string Mask(string e)
+{
+    var i = (e ?? "").IndexOf('@');
+    return i <= 1 ? e : e.Substring(0, 1) + new string('•', Math.Min(6, i - 1)) + e.Substring(i);
+}
+static string AddLog(string json, string at, string by, string text)
+{
+    List<Dictionary<string, string>> list;
+    try { list = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(string.IsNullOrEmpty(json) ? "[]" : json) ?? new(); } catch { list = new(); }
+    list.Add(new Dictionary<string, string> { ["at"] = at, ["by"] = by, ["text"] = text });
+    return JsonSerializer.Serialize(list);
+}
+static async Task<Rate> RateOn(AppDb db, string date) =>
+    await db.Rates.AsNoTracking().Where(r => string.Compare(r.Date, date) <= 0).OrderByDescending(r => r.Date).FirstOrDefaultAsync();
 static async Task<Cheque> Chq(AppDb db, JsonElement b) { var id = Str(b, "id"); return string.IsNullOrEmpty(id) ? null : await db.Cheques.FirstOrDefaultAsync(c => c.Id == id); }
 static async Task<IResult> Save(AppDb db, string id)
 {

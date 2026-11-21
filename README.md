@@ -2,17 +2,21 @@
 
 ChequeTrack follows every company cheque from the request to bank clearance. It covers CFO approval with a locked exchange rate, Finance issuing, the requester confirming receipt and delivery, clearing or returns, reports and Telegram alerts.
 
-## Features
+## Features (v2)
 
-- **Cheque workflow:** Pending CFO → Approved → Issued to requester → Received by requester → With beneficiary → Cleared / Returned → Solved. A request can also be Rejected or Cancelled.
-- **Roles:** Department User, Finance Team, CFO, Top Management.
-- **Exchange rates:** USD base with QAR and SDG. The rate is locked when the CFO approves and is used in every report.
-- **Follow-up:** Due Payments, Smart Reports, CSV export, plus search, filters and paging on every list.
-- **Beneficiaries:** English and Arabic names. A beneficiary can only be deleted if no cheque uses it.
-- **Administration:** users, departments and a sign-in policy (length, complexity, expiry, lockout, idle timeout), plus an audit log.
-- **Telegram:** a daily digest grouped by stage and instant stage messages. The CFO connects the bot in the app, and the token is stored encrypted.
-- **Safe concurrent editing:** row versions stop two users from silently overwriting each other.
-- **CFO reset:** a one-time reset of the CFO sign-in, triggered from Azure (see below).
+- **Design:** Materio-style look (primary #8C57FF, light #F4F5FA background), a side menu with groups and sub-menus, English and Arabic (right-to-left). All dates show as dd/MM/yyyy.
+- **Cheque workflow:** Pending CFO → Second approval (when needed) → Approved → Issued to requester → Received → With beneficiary → Cleared / Returned → Settled. Requests can be Rejected or Cancelled.
+- **Roles:** Department User, Finance, CFO, Top Management, System Admin, Auditor (read-only). Duty rules: no one approves, issues or clears their own request or cheque.
+- **Requests:** entity, operation type (supplier payment, financing instalment, final settlement, institutional instalment, payment on account), payment or guarantee, related party, line items with principal/profit, supporting document upload, partial payments, payment made before the request, urgent priority, duplicate warning.
+- **Second approval:** above a USD limit (default 10,000), related parties, or payments made before the request.
+- **Exchange rates (IAS 21):** the document-date rate is saved and locked at approval; the issue-day rate is saved when the payment currency differs; the clearing rate is saved with the realised FX difference. Rate alert when a new rate moves more than a set %.
+- **Financing:** contracts register with remaining principal, extensions and history.
+- **Banking:** banks, accounts per entity and currency, chequebooks with next free number, voided numbers.
+- **Accounting:** journal entries built from each cheque (issue, revaluation and reversal, clearing, return, payment on account), with a "posted" mark and Excel export.
+- **Dashboard and reports with charts:** open cheques by stage, approved vs cleared per month, due in the next 4 weeks, commitments by entity; reports for overview and cycle times, outstanding and revaluation, realised FX, due and ageing, by entity and currency, contracts, payments on account, payments before request.
+- **Accounts:** email is required for every user; forgot password by email link (30 minutes, single use); optional two-step sign-in code by email; sign-in policy, lockout and idle sign-out; audit log.
+- **Telegram:** daily digest and stage alerts (optional, can be hidden).
+- **Upgrade:** an existing v1 database is upgraded in place on start-up (`Schema.cs`); old cheques are kept.
 
 ## Tech stack
 
@@ -27,8 +31,10 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 |---|---|
 | `Program.cs` | Startup, security headers, CSRF guard and API endpoints (`/api/me`, `/api/setup`, `/api/login`, `/api/state`, `/api/act`, `/api/cron/{key}`) |
 | `Data.cs` | Entities and the EF Core context (`AppDb`) |
-| `Logic.cs` | Settings, roles, password policy, time zone, and the Telegram notifier and daily worker |
-| `wwwroot/index.html` | The whole user interface |
+| `Logic.cs` | Settings, roles, password policy, exchange-rate maths, email sender, Telegram notifier and daily worker |
+| `Schema.cs` | Adds the v2 tables and columns to an existing database |
+| `wwwroot/index.html` | Page shell and styles |
+| `wwwroot/js/` | `app.js` (shell, sign-in, menu), `pages.js` and `pages2.js` (screens), `charts.js` (SVG charts), `i18n.js` (Arabic) |
 | `appsettings.json` | Configuration. The connection string comes from the environment. |
 
 ## Run locally
@@ -55,7 +61,9 @@ App settings:
 - `ConnectionStrings:ChequeDb`: use Microsoft Entra authentication with the web app's managed identity, so the connection string holds no password. For example: `Server=tcp:<server>.database.windows.net,1433;Database=ChequeDB;Authentication=Active Directory Default;Encrypt=True;`
 - `CFO_RESET` (optional, one time): set a new value to reopen the "Create the CFO sign-in" screen. All other data is kept. Remove the setting afterwards, because each value works only once.
 
-On the free plan the app sleeps when idle. To make sure the daily Telegram digest is sent, add the private **Daily alert wake-up link** (CFO → Settings → General) to an external scheduler such as cron-job.org, set to run every 30 minutes.
+Email (for password reset and sign-in codes) is set by the System Admin in Settings › Email; the SMTP password is stored encrypted.
+
+On the free plan the app sleeps when idle. To make sure the daily Telegram digest is sent, add the private **Daily alert wake-up link** (Setup › Telegram alerts) to an external scheduler such as cron-job.org, set to run every 30 minutes.
 
 ## Security notes
 

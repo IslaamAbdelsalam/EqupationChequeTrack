@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net;
+using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.DataProtection;
@@ -20,6 +21,28 @@ public class Policy
     public int SessionMin { get; set; } = 30;
 }
 
+/// Default account numbers for the proposed journal entries (editable in Settings).
+public class AccountNos
+{
+    public string Payables { get; set; } = "2101";
+    public string Deferred { get; set; } = "2150";
+    public string FinPrincipal { get; set; } = "2200";
+    public string FinProfit { get; set; } = "2300";
+    public string Poa { get; set; } = "1300";
+    public string FxDiff { get; set; } = "7400";
+}
+
+public class SmtpCfg
+{
+    public string Host { get; set; } = "";
+    public int Port { get; set; } = 587;
+    public string User { get; set; } = "";
+    public string PassEnc { get; set; } = "";
+    public string From { get; set; } = "";
+    public string FromName { get; set; } = "ChequeTrack";
+    public bool Ssl { get; set; } = true;
+}
+
 public class AppSettings
 {
     public int AlertDays { get; set; } = 7;
@@ -28,48 +51,96 @@ public class AppSettings
     public string BotTokenEnc { get; set; } = "";
     public Dictionary<string, bool> TgEvents { get; set; } = new()
     {
-        ["approved"] = true, ["issued"] = true, ["received"] = true, ["delivered"] = true,
+        ["approved"] = true, ["approved2"] = true, ["issued"] = true, ["received"] = true, ["delivered"] = true,
         ["cleared"] = true, ["returned"] = true, ["solved"] = true, ["rejected"] = true
     };
+    public bool HideTelegram { get; set; }
     public string ReportCurrency { get; set; } = "USD";
     public string Company { get; set; } = "Equpation";
     public string TimeZone { get; set; } = "Africa/Khartoum";
     public string CronKey { get; set; } = "";
     public string Logo { get; set; } = "";
-    public List<string> Banks { get; set; } = new() { "Bank of Khartoum", "Faisal Islamic Bank", "Qatar National Bank" };
+    public List<string> Banks { get; set; } = new();          // v1 free-text banks (kept for old data)
     public Policy Policy { get; set; } = new();
     // One-time CFO reset, triggered from Azure with the CFO_RESET app setting
     public string CfoResetDone { get; set; } = "";
     public int CfoResetUser { get; set; } = -1;   // -1 none pending, 0 create a new CFO, >0 user id to re-create
+    // v2
+    public decimal SecondLimitUsd { get; set; } = 10000m;
+    public decimal RateAlertPct { get; set; } = 5m;
+    public AccountNos Acc { get; set; } = new();
+    public SmtpCfg Smtp { get; set; } = new();
+    public bool FuncConfirmed { get; set; }
 }
 
 public static class Roles
 {
-    public const string TOP = "TOP", CFO = "CFO", FIN = "FIN", USER = "USER";
-    public static readonly string[] All = { TOP, CFO, FIN, USER };
-    public static bool Admin(string r) => r == TOP || r == CFO;
+    public const string TOP = "TOP", CFO = "CFO", FIN = "FIN", USER = "USER", ADMIN = "ADMIN", AUDIT = "AUDIT";
+    public static readonly string[] All = { USER, FIN, CFO, TOP, ADMIN, AUDIT };
     public static bool SeeAll(string r) => r != USER;
-    public static bool Finance(string r) => r == FIN || r == CFO;
-    public static bool Bens(string r) => r == TOP || r == CFO || r == FIN;
+    public static bool CanRequest(string r) => r == USER || r == FIN || r == CFO || r == TOP;
+    public static bool ClearOrReturn(string r) => r == FIN || r == CFO;
 }
 
 public static class St
 {
     public static readonly string[] Open = { "Approved", "Posted", "Received", "Delivered", "Returned" };
+    public static readonly string[] Dead = { "Rejected", "Cancelled" };
+}
+
+public static class Lists
+{
+    public static readonly string[] Curs = { "USD", "QAR", "SDG" };
+    public const string Poa = "Payment on account";
+    public static readonly string[] OpTypes = { "Supplier payment", "Financing instalment", "Final settlement", "Institutional instalment", Poa, "Other" };
+    public static readonly string[] Financing = { "Financing instalment", "Final settlement", "Institutional instalment" };
+    public static readonly string[] SplitRequired = { "Final settlement", "Institutional instalment" };
+    public static readonly string[] Purposes = { "Payment", "Guarantee" };
+    public static readonly string[] BenTypes = { "Supplier", "Financier", "Customer", "Employee", "Other" };
+    public static readonly string[] SolveMethods = { "Replacement cheque", "Transfer", "Obligation cancelled" };
+    public static readonly string[] Priorities = { "Normal", "Urgent" };
+}
+
+public static class Fx
+{
+    public static decimal PerUsd(string cur, decimal qar, decimal sdg) => cur == "USD" ? 1m : cur == "QAR" ? qar : sdg;
+    public static decimal Conv(decimal amount, string from, string to, decimal qar, decimal sdg)
+    {
+        if (from == to) return amount;
+        var f = PerUsd(from, qar, sdg); var t = PerUsd(to, qar, sdg);
+        if (f <= 0) return 0m;
+        return amount / f * t;
+    }
+    /// SDG has no fractions; USD and QAR use two decimals.
+    public static decimal Round(decimal v, string cur) => Math.Round(v, cur == "SDG" ? 0 : 2, MidpointRounding.AwayFromZero);
 }
 
 public class SettingsStore
 {
     static readonly JsonSerializerOptions J = new(JsonSerializerDefaults.Web);
-    readonly IDataProtector _p;
-    public SettingsStore(IDataProtectionProvider dp) { _p = dp.CreateProtector("ChequeTrack.Telegram.v1"); }
+    readonly IDataProtector _p, _m;
+    public SettingsStore(IDataProtectionProvider dp)
+    {
+        _p = dp.CreateProtector("ChequeTrack.Telegram.v1");
+        _m = dp.CreateProtector("ChequeTrack.Smtp.v1");
+    }
 
     public async Task<AppSettings> Get(AppDb db)
     {
         var row = await db.Settings.AsNoTracking().FirstOrDefaultAsync(x => x.Key == "app");
-        if (row == null || string.IsNullOrWhiteSpace(row.Value)) return new AppSettings();
-        try { return JsonSerializer.Deserialize<AppSettings>(row.Value, J) ?? new AppSettings(); }
-        catch { return new AppSettings(); }
+        if (row == null || string.IsNullOrWhiteSpace(row.Value)) return Fix(new AppSettings());
+        try { return Fix(JsonSerializer.Deserialize<AppSettings>(row.Value, J) ?? new AppSettings()); }
+        catch { return Fix(new AppSettings()); }
+    }
+
+    static AppSettings Fix(AppSettings s)
+    {
+        s.Policy ??= new Policy(); s.Acc ??= new AccountNos(); s.Smtp ??= new SmtpCfg(); s.Banks ??= new List<string>();
+        s.TgEvents ??= new Dictionary<string, bool>();
+        if (!s.TgEvents.ContainsKey("approved2")) s.TgEvents["approved2"] = true;
+        if (s.SecondLimitUsd <= 0) s.SecondLimitUsd = 10000m;
+        if (s.RateAlertPct <= 0) s.RateAlertPct = 5m;
+        return s;
     }
 
     public async Task Save(AppDb db, AppSettings s)
@@ -87,6 +158,13 @@ public class SettingsStore
         try { return _p.Unprotect(s.BotTokenEnc); } catch { return ""; }
     }
     public void SetToken(AppSettings s, string token) => s.BotTokenEnc = string.IsNullOrEmpty(token) ? "" : _p.Protect(token);
+
+    public string SmtpPass(AppSettings s)
+    {
+        if (string.IsNullOrEmpty(s.Smtp?.PassEnc)) return "";
+        try { return _m.Unprotect(s.Smtp.PassEnc); } catch { return ""; }
+    }
+    public void SetSmtpPass(AppSettings s, string pass) => s.Smtp.PassEnc = string.IsNullOrEmpty(pass) ? "" : _m.Protect(pass);
 }
 
 public static class Clock
@@ -105,6 +183,9 @@ public static class Clock
         return (int)(d.Date - Now(s).Date).TotalDays;
     }
     public static bool ValidDate(string d) => DateTime.TryParseExact(d ?? "", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
+    public static string AddMonths(string d, int months) =>
+        DateTime.TryParseExact(d ?? "", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var x)
+            ? x.AddMonths(months).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "";
 }
 
 public static class Fmt
@@ -113,6 +194,13 @@ public static class Fmt
         v.ToString(cur == "SDG" ? "N0" : "N2", CultureInfo.InvariantCulture) + (string.IsNullOrEmpty(cur) ? "" : " " + cur);
     public static string First(string s) => (s ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
     public static string H(string s) => WebUtility.HtmlEncode(s ?? "");
+    /// yyyy-MM-dd[ HH:mm] → dd/MM/yyyy[ HH:mm]
+    public static string D(string iso)
+    {
+        if (string.IsNullOrEmpty(iso) || iso.Length < 10) return iso ?? "";
+        var d = iso.Substring(8, 2) + "/" + iso.Substring(5, 2) + "/" + iso.Substring(0, 4);
+        return iso.Length > 10 ? d + iso.Substring(10) : d;
+    }
 }
 
 public static class Pwd
@@ -130,6 +218,59 @@ public static class Pwd
     public static bool Verify(string pw, string hash)
     {
         try { return !string.IsNullOrEmpty(hash) && BCrypt.Net.BCrypt.Verify(pw ?? "", hash); } catch { return false; }
+    }
+}
+
+/// Sends email through the SMTP server set in Settings › Email (port 587 with STARTTLS, or 25).
+public class Mailer
+{
+    readonly SettingsStore _ss; readonly ILogger<Mailer> _log;
+    public Mailer(SettingsStore ss, ILogger<Mailer> log) { _ss = ss; _log = log; }
+
+    public static bool Ready(AppSettings s) => !string.IsNullOrWhiteSpace(s.Smtp?.Host) && !string.IsNullOrWhiteSpace(s.Smtp?.From);
+
+    public async Task<string> Send(AppSettings s, string to, string subject, string html)
+    {
+        if (!Ready(s)) return "Email is not set up yet (Settings › Email).";
+        try
+        {
+            using var msg = new MailMessage
+            {
+                From = new MailAddress(s.Smtp.From, string.IsNullOrWhiteSpace(s.Smtp.FromName) ? "ChequeTrack" : s.Smtp.FromName),
+                Subject = subject, Body = html, IsBodyHtml = true, BodyEncoding = Encoding.UTF8, SubjectEncoding = Encoding.UTF8
+            };
+            msg.To.Add(new MailAddress(to));
+            using var c = new SmtpClient(s.Smtp.Host, s.Smtp.Port <= 0 ? 587 : s.Smtp.Port)
+            {
+                EnableSsl = s.Smtp.Ssl, DeliveryMethod = SmtpDeliveryMethod.Network, Timeout = 20000
+            };
+            if (!string.IsNullOrEmpty(s.Smtp.User)) c.Credentials = new NetworkCredential(s.Smtp.User, _ss.SmtpPass(s));
+            await c.SendMailAsync(msg);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Email to {To} failed", to);
+            return "Email could not be sent: " + ex.Message;
+        }
+    }
+
+    /// Simple branded HTML email, right-to-left when the user reads Arabic.
+    public static string Layout(bool ar, string title, string bodyHtml, string buttonText = null, string buttonUrl = null)
+    {
+        var dir = ar ? "rtl" : "ltr";
+        var sb = new StringBuilder();
+        sb.Append("<div dir=\"").Append(dir).Append("\" style=\"font-family:Segoe UI,Arial,sans-serif;background:#F4F4F2;padding:24px\">");
+        sb.Append("<div style=\"max-width:520px;margin:0 auto;background:#fff;border-radius:14px;padding:28px;border:1px solid #ECEAE4\">");
+        sb.Append("<div style=\"font-weight:700;font-size:18px;margin-bottom:18px\"><span style=\"display:inline-block;background:#FFC400;border-radius:8px;padding:4px 10px;margin-")
+          .Append(ar ? "left" : "right").Append(":8px\">E</span>ChequeTrack</div>");
+        sb.Append("<h2 style=\"font-size:19px;margin:0 0 12px\">").Append(Fmt.H(title)).Append("</h2>");
+        sb.Append("<div style=\"font-size:15px;line-height:1.6;color:#2B2B2B\">").Append(bodyHtml).Append("</div>");
+        if (!string.IsNullOrEmpty(buttonUrl))
+            sb.Append("<p style=\"margin:22px 0\"><a href=\"").Append(Fmt.H(buttonUrl)).Append("\" style=\"background:#FFC400;color:#1D1D1D;text-decoration:none;font-weight:600;padding:12px 18px;border-radius:10px;display:inline-block\">")
+              .Append(Fmt.H(buttonText)).Append("</a></p>");
+        sb.Append("</div></div>");
+        return sb.ToString();
     }
 }
 
@@ -169,9 +310,9 @@ public class Notifier
 
     static readonly Dictionary<string, string> Titles = new()
     {
-        ["approved"] = "✅ Approved by CFO", ["issued"] = "🧾 Cheque issued to requester", ["received"] = "📥 Received by requester",
-        ["delivered"] = "🤝 Delivered to beneficiary", ["cleared"] = "💚 Cleared", ["returned"] = "🔴 Returned",
-        ["solved"] = "✔️ Returned cheque solved", ["rejected"] = "⛔ Rejected"
+        ["approved"] = "✅ Approved by CFO", ["approved2"] = "✅ Second approval given", ["issued"] = "🧾 Cheque issued to requester",
+        ["received"] = "📥 Received by requester", ["delivered"] = "🤝 Delivered to beneficiary", ["cleared"] = "💚 Cleared",
+        ["returned"] = "🔴 Returned", ["solved"] = "✔️ Returned cheque settled", ["rejected"] = "⛔ Rejected"
     };
 
     public static string Amt(Cheque c) => c.PayAmt.HasValue ? Fmt.Money(c.PayAmt.Value, c.PayCur) : Fmt.Money(c.Amount, c.Currency);
@@ -180,22 +321,22 @@ public class Notifier
         var n = Clock.DaysUntil(s, c.DueDate);
         return n < 0 ? $"{-n}d overdue" : n == 0 ? "due TODAY" : $"due in {n}d";
     }
+    bool Off(AppSettings s) => s.HideTelegram || string.IsNullOrEmpty(_ss.Token(s)) || string.IsNullOrEmpty(s.TelegramChannel);
 
     public async Task Event(AppDb db, AppSettings s, Cheque c, string ev, string extra, string by)
     {
-        var token = _ss.Token(s);
-        if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(s.TelegramChannel)) return;
+        if (Off(s)) return;
         if (s.TgEvents == null || !s.TgEvents.TryGetValue(ev, out var on) || !on) return;
         var ben = await db.Beneficiaries.AsNoTracking().FirstOrDefaultAsync(b => b.Id == c.BenId);
         var sb = new StringBuilder();
         sb.Append("<b>").Append(Fmt.H(Titles.GetValueOrDefault(ev, ev))).Append("</b>\n");
         sb.Append(Fmt.H(c.Id)).Append(" · ").Append(Fmt.H(ben?.NameEn)).Append('\n');
-        sb.Append(Fmt.H(Amt(c))).Append(" · ").Append(c.DueDate).Append(" (").Append(DueWord(s, c)).Append(')');
+        sb.Append(Fmt.H(Amt(c))).Append(" · ").Append(Fmt.D(c.DueDate)).Append(" (").Append(DueWord(s, c)).Append(')');
         if (!string.IsNullOrEmpty(c.ChequeNo)) sb.Append(" · #").Append(Fmt.H(c.ChequeNo));
         if (!string.IsNullOrEmpty(extra)) sb.Append('\n').Append(Fmt.H(extra));
         sb.Append("\nby ").Append(Fmt.H(by));
         var text = sb.ToString();
-        var err = await _tg.Send(token, s.TelegramChannel, text);
+        var err = await _tg.Send(_ss.Token(s), s.TelegramChannel, text);
         db.TgMessages.Add(new TgMessage { At = Clock.Stamp(s), Text = text, Kind = "event", Day = Clock.Today(s), By = by, Sent = err == null, Error = err ?? "" });
         await db.SaveChangesAsync();
     }
@@ -203,24 +344,25 @@ public class Notifier
     public async Task<(string text, int count)> Digest(AppDb db, AppSettings s)
     {
         var w = s.AlertDays;
-        var open = await db.Cheques.AsNoTracking().Where(c => St.Open.Contains(c.Status)).ToListAsync();
+        var open = await db.Cheques.AsNoTracking().Where(c => St.Open.Contains(c.Status) || c.Status == "Pending" || c.Status == "Pending2").ToListAsync();
         var bens = await db.Beneficiaries.AsNoTracking().ToDictionaryAsync(b => b.Id, b => b.NameEn);
         var users = await db.Users.AsNoTracking().ToDictionaryAsync(u => u.Id, u => u.FullName);
         bool InW(Cheque c) => Clock.DaysUntil(s, c.DueDate) <= w;
         var groups = new List<(string h, List<Cheque> l, Func<Cheque, string> x)>
         {
-            ("🔴 RETURNED — to be solved", open.Where(c => c.Status == "Returned").ToList(), c => string.IsNullOrEmpty(c.ClosedReason) ? "" : "reason: " + c.ClosedReason),
+            ("🔴 RETURNED — to be settled", open.Where(c => c.Status == "Returned").ToList(), c => string.IsNullOrEmpty(c.ClosedReason) ? "" : "reason: " + c.ClosedReason),
             ("⏰ DUE / OVERDUE — clear or return", open.Where(c => c.Status == "Delivered" && Clock.DaysUntil(s, c.DueDate) <= 0).ToList(), c => ""),
             ("🏦 WITH BENEFICIARY — will submit to bank", open.Where(c => c.Status == "Delivered" && Clock.DaysUntil(s, c.DueDate) > 0 && InW(c)).ToList(), c => string.IsNullOrEmpty(c.DeliveredTo) ? "" : "handed to " + c.DeliveredTo),
             ("📦 NOT RECEIVED BY BENEFICIARY yet", open.Where(c => (c.Status == "Posted" || c.Status == "Received") && InW(c)).ToList(),
                 c => (c.Status == "Posted" ? "waiting " + Fmt.First(users.GetValueOrDefault(c.RequesterId)) + " to confirm receipt" : "with " + Fmt.First(users.GetValueOrDefault(c.RequesterId)) + " — not delivered")),
-            ("🟡 APPROVED — not issued yet", open.Where(c => c.Status == "Approved" && InW(c)).ToList(), c => "")
+            ("🟡 APPROVED — not issued yet", open.Where(c => c.Status == "Approved" && InW(c)).ToList(), c => ""),
+            ("🟣 WAITING APPROVAL", open.Where(c => (c.Status == "Pending" || c.Status == "Pending2") && InW(c)).ToList(), c => c.Status == "Pending2" ? "second approval (Top Management)" : "CFO approval")
         };
         groups = groups.Where(g => g.l.Count > 0).ToList();
         var count = groups.Sum(g => g.l.Count);
         if (count == 0) return ("", 0);
         var sb = new StringBuilder();
-        sb.Append("🔔 <b>Daily cheque alert</b> — ").Append(Clock.Today(s)).Append("\n(alert window: ").Append(w).Append(" days)\n");
+        sb.Append("🔔 <b>Daily cheque alert</b> — ").Append(Fmt.D(Clock.Today(s))).Append("\n(alert window: ").Append(w).Append(" days)\n");
         foreach (var g in groups)
         {
             sb.Append("\n<b>").Append(Fmt.H(g.h)).Append("</b> (").Append(g.l.Count).Append(")\n");
@@ -240,11 +382,10 @@ public class Notifier
 
     public async Task<string> SendDigest(AppDb db, AppSettings s, string by)
     {
-        var token = _ss.Token(s);
-        if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(s.TelegramChannel)) return "Telegram is not set up";
+        if (Off(s)) return "Telegram is not set up";
         var (text, count) = await Digest(db, s);
         if (count == 0) return "Nothing to alert today";
-        var err = await _tg.Send(token, s.TelegramChannel, text);
+        var err = await _tg.Send(_ss.Token(s), s.TelegramChannel, text);
         db.TgMessages.Add(new TgMessage { At = Clock.Stamp(s), Text = text, Kind = "digest", Day = Clock.Today(s), Count = count, By = by, Sent = err == null, Error = err ?? "" });
         await db.SaveChangesAsync();
         return err;
@@ -254,7 +395,7 @@ public class Notifier
     public async Task DailyIfDue(AppDb db)
     {
         var s = await _ss.Get(db);
-        if (string.IsNullOrEmpty(_ss.Token(s)) || string.IsNullOrEmpty(s.TelegramChannel)) return;
+        if (Off(s)) return;
         var now = Clock.Now(s);
         if (!TimeSpan.TryParse(s.AlertTime, CultureInfo.InvariantCulture, out var at)) at = new TimeSpan(9, 0, 0);
         if (now.TimeOfDay < at) return;
