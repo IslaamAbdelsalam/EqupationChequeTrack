@@ -300,7 +300,7 @@ function sideHtml() {
   const m = menu();
   const b = D.settings;
   return `<aside class="side" aria-label="${t('Main menu')}">
-   <div class="brand" style="flex-direction:column;align-items:flex-start;gap:4px"><img class="blogo" src="${esc(b.logo || '/img/logo.png')}" alt="${esc(b.company || 'Equpation')}"><div class="sm b" style="color:var(--ydark)">ChequeTrack</div></div>
+   <div class="brand" style="flex-direction:column;align-items:flex-start;gap:4px"><img class="blogo" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><div class="sm b" style="color:var(--ydark)">ChequeTrack</div></div>
    ${can.request() ? `<a class="btn btn-y" href="#/new" style="margin:0 4px 14px">${ic('plus')}${t('New request')}</a>` : ''}
    <nav style="display:flex;flex-direction:column;gap:2px">
    ${m.map(i => i.g ? (i.items.length ? `<div class="grp ${isOpen(i.g) ? 'open' : ''}">
@@ -378,7 +378,7 @@ function pageView() {
 function brandBlock() {
   const b = S.brand || {};
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-    <div><img class="blogo" style="height:52px" src="${esc(b.logo || '/img/logo.png')}" alt="${esc(b.company || 'Equpation')}"><div class="sm mut" style="margin-top:4px"><b style="color:var(--ydark)">ChequeTrack</b> · ${t('cheque management')}</div></div>
+    <div><img class="blogo" style="height:52px" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><div class="sm mut" style="margin-top:4px"><b style="color:var(--ydark)">ChequeTrack</b> · ${t('cheque management')}</div></div>
     <button class="btn btn-o btn-sm" onclick="setLang(LANG==='ar'?'en':'ar');render()">${LANG === 'ar' ? 'English' : 'العربية'}</button></div>`;
 }
 function authView() {
