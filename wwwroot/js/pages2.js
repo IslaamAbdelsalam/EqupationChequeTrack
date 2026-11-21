@@ -448,7 +448,7 @@ function settingsPage() {
   const save = (sec, body) => `<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-y" onclick="act('saveSettings',Object.assign({section:'${sec}'},${body}),'${js(t('Settings saved'))}')">${t('Save')}</button></div>`;
   let body = '';
   if (f.tab === 'general') body = `<div class="fgrid">${fld('g_c', t('Company name'), inp('g_c', s.company), 1)}${fld('g_rc', t('Report currency'), sel('g_rc', CURS, s.reportCurrency))}${fld('g_tz', t('Time zone'), inp('g_tz', s.timeZone, 'dir="ltr"'))}</div>
-    <div style="margin-top:16px"><div class="lbl">${t('Logo')}</div><div class="drop"><img class="blogo" src="${esc((S.logo ?? s.logo) || '/img/logo.png')}" alt="">
+    <div style="margin-top:16px"><div class="lbl">${t('Logo')}</div><div class="drop"><img class="blogo" src="${esc((S.logo ?? s.logo) || '/img/logo.svg')}" alt="">
      <label class="btn btn-o btn-sm">${ic('file')}${t('Choose image')}<input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="hide" onchange="pickLogo(this)"></label>${(S.logo ?? s.logo) ? `<button class="btn btn-o btn-sm" onclick="S.logo='';render()">${t('Remove')}</button>` : ''}<span class="sm mut">${t('PNG or JPG, up to 250 KB. Without one, the Equpation logo is used.')}</span></div></div>
     ${save('general', "{company:val('g_c'),reportCurrency:val('g_rc'),timeZone:val('g_tz'),logo:(S.logo??D.settings.logo)}")}`;
   if (f.tab === 'approval') body = `<div class="fgrid">${fld('a_lim', t('Second approval above (USD)'), inp('a_lim', s.secondLimitUsd, 'inputmode="decimal" dir="ltr"'), 1)}${fld('a_pct', t('Rate alert when the change is above (%)'), inp('a_pct', s.rateAlertPct, 'inputmode="decimal" dir="ltr"'), 1)}</div>
