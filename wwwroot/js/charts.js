@@ -1,11 +1,11 @@
 /* =========================================================
    Charts — small SVG charts, no libraries.
-   Colours: Equpation amber #F89012 and blue #2A6FB8 (values are also labelled or tabled) (checked for colour-blind
+   Colours: Equpation yellow #FFC400 and blue #2A6FB8 (values are also labelled or tabled) (checked for colour-blind
    separation and 3:1 contrast); loss red / gain blue for FX.
    Every bar has a hover tooltip; values are also labelled or tabled.
    ========================================================= */
 'use strict';
-const CH = { gold: '#F89012', blue: '#2A6FB8', red: '#B3261E', grid: '#EFEDE8', axis: '#D8D6D0', ink: '#5A554D' };
+const CH = { gold: '#FFC400', blue: '#2A6FB8', red: '#B3261E', grid: '#EFEDE8', axis: '#D8D6D0', ink: '#5A554D' };
 
 function short(v) {
   const a = Math.abs(v), s = v < 0 ? '-' : '';
