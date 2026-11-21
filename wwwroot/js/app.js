@@ -262,18 +262,25 @@ function route() {
   const r = parseHash();
   if (r.page === 'reset') { S.resetToken = r.arg; S.resetInfo = null; history.replaceState(null, '', location.pathname); }
   else { S.page = r.page; S.arg = r.arg; S.q = r.q; }
-  closeM(); document.querySelector('.side')?.classList.remove('open');
+  closeM(); S.side = false;
   render(); window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
+function toggleMenu() {
+  if (window.matchMedia('(max-width:1199px)').matches) { S.side = !S.side; document.querySelector('.side')?.classList.toggle('open', S.side); }
+  else { const off = document.body.classList.toggle('nomenu'); try { localStorage.setItem('ct.nomenu', off ? '1' : ''); } catch (e) { } }
+}
+try { if (localStorage.getItem('ct.nomenu')) document.body.classList.add('nomenu'); } catch (e) { }
+document.addEventListener('click', e => { if (S.side && !e.target.closest('.side,.burger')) { S.side = false; document.querySelector('.side')?.classList.remove('open'); } });
 
 function menu() {
   const tasks = myTasks();
   const cnt = f => tasks.filter(f).length;
   const items = [];
   items.push({ id: 'home', ic: 'home', label: t('Home'), cnt: tasks.length });
+  if (can.request()) items.push({ id: 'new', ic: 'plus', label: t('New request') });
+  items.push({ h: t('Operations') });
   const ch = [];
-  if (can.request()) ch.push({ id: 'new', label: t('New request') });
   if (can.request()) ch.push({ id: 'mine', label: t('My requests'), cnt: cnt(x => x.mine) });
   if (can.seeAll()) ch.push({ id: 'cheques', label: t('All cheques') });
   if (can.approve() || can.approve2()) ch.push({ id: 'approvals', label: t('Approvals'), cnt: cnt(x => x.kind === 'approve') });
@@ -282,6 +289,7 @@ function menu() {
   items.push({ g: 'cheques', ic: 'cheque', label: t('Cheques'), items: ch });
   if (can.seeAll()) items.push({ g: 'fin', ic: 'contract', label: t('Financing'), items: [{ id: 'contracts', label: t('Contracts register') }, { id: 'poa', label: t('Payments on account'), cnt: cnt(x => x.kind === 'poa') }] });
   items.push({ id: 'rates', ic: 'rates', label: t('Exchange rates'), cnt: cnt(x => x.kind === 'rate') });
+  if (can.seeAll()) items.push({ h: t('Finance') });
   if (can.seeAll()) items.push({ g: 'acc', ic: 'chart', label: t('Accounting & reports'), items: [{ id: 'reports', label: t('Reports') }, { id: 'entries', label: t('Journal entries') }] });
   if (can.seeAll()) items.push({ g: 'bank', ic: 'bank', label: t('Banking'), items: [{ id: 'banks', label: t('Banks & accounts') }, { id: 'books', label: t('Chequebooks') }, { id: 'voided', label: t('Voided numbers') }] });
   const st = [];
@@ -290,6 +298,7 @@ function menu() {
   if (can.seeAll() && !D.settings.hideTelegram) st.push({ id: 'telegram', label: t('Telegram alerts') });
   if (can.audit()) st.push({ id: 'audit', label: t('Audit log') });
   if (can.checklist()) st.push({ id: 'checklist', label: t('Go-live checklist') });
+  if (st.length) items.push({ h: t('Administration') });
   if (st.length) items.push({ g: 'setup', ic: 'setup', label: t('Setup'), items: st });
   return items;
 }
@@ -299,24 +308,23 @@ function cntB(n) { return n ? `<span class="cnt">${n}</span>` : ''; }
 function sideHtml() {
   const m = menu();
   const b = D.settings;
-  return `<aside class="side" aria-label="${t('Main menu')}">
-   <div class="brand" style="flex-direction:column;align-items:flex-start;gap:4px"><img class="blogo" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><div class="sm b" style="color:var(--ydark)">ChequeTrack</div></div>
-   ${can.request() ? `<a class="btn btn-y" href="#/new" style="margin:0 4px 14px">${ic('plus')}${t('New request')}</a>` : ''}
-   <nav style="display:flex;flex-direction:column;gap:2px">
-   ${m.map(i => i.g ? (i.items.length ? `<div class="grp ${isOpen(i.g) ? 'open' : ''}">
+  return `<aside class="side ${S.side ? 'open' : ''}" aria-label="${t('Main menu')}">
+   <div class="brand"><img class="blogo" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><span class="bname">ChequeTrack</span>
+     <button class="mtog" aria-label="${t('Menu')}" onclick="toggleMenu()"><svg class="ic mc" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 7-5 5 5 5"/><path d="m18 7-5 5 5 5"/></svg><svg class="ic mx" viewBox="0 0 24 24" aria-hidden="true">${IC.x}</svg></button></div>
+   <nav class="mnav">
+   ${m.map(i => i.h ? `<div class="mhead">${esc(i.h)}</div>` : i.g ? (i.items.length ? `<div class="grp ${isOpen(i.g) ? 'open' : ''}">
       <button class="nav ${i.items.some(x => x.id === S.page) ? 'has-on' : ''}" aria-expanded="${isOpen(i.g)}" onclick="toggleGrp('${i.g}')">${ic(i.ic)}${esc(i.label)}${cntB(i.items.reduce((s, x) => s + (x.cnt || 0), 0) && !isOpen(i.g) ? i.items.reduce((s, x) => s + (x.cnt || 0), 0) : 0)}<svg class="ic chev" viewBox="0 0 24 24" aria-hidden="true">${IC.down}</svg></button>
       <div class="subs">${i.items.map(x => `<a class="sub ${S.page === x.id ? 'on' : ''}" href="#/${x.id}" ${S.page === x.id ? 'aria-current="page"' : ''}>${esc(x.label)}${cntB(x.cnt)}</a>`).join('')}</div></div>` : '')
       : `<a class="nav ${S.page === i.id ? 'on' : ''}" href="#/${i.id}" ${S.page === i.id ? 'aria-current="page"' : ''}>${ic(i.ic)}${esc(i.label)}${cntB(i.cnt)}</a>`).join('')}
-   </nav>
-   <div style="margin-top:auto;padding-top:16px;display:flex;flex-direction:column;gap:6px">
-     <a class="nav" href="#/profile">${ic('key')}${t('My profile')}</a>
-     <button class="nav" onclick="logout()">${ic('logout')}${t('Sign out')}</button>
-   </div></aside>`;
+   <div class="mhead">${t('Account')}</div>
+   <a class="nav ${S.page === 'profile' ? 'on' : ''}" href="#/profile">${ic('key')}${t('My profile')}</a>
+   <button class="nav" onclick="logout()">${ic('logout')}${t('Sign out')}</button>
+   </nav></aside>`;
 }
 function topHtml() {
   const u = S.user;
   return `<header class="top">
-   <button class="btn btn-o btn-sm burger" aria-label="${t('Menu')}" onclick="document.querySelector('.side').classList.toggle('open')">${ic('menu')}</button>
+   <button class="btn btn-o btn-sm burger" aria-label="${t('Menu')}" onclick="toggleMenu()">${ic('menu')}</button>
    <div class="srch">${ic('search')}<input class="in" id="gq" type="search" placeholder="${t('Search by reference, beneficiary or cheque no.')}" aria-label="${t('Search cheques')}" oninput="gsearch(this.value)" onblur="setTimeout(()=>{const r=document.getElementById('gres');if(r)r.innerHTML=''},200)"><div id="gres"></div></div>
    <div class="sp"></div>
    <button class="btn btn-o btn-sm" onclick="switchLang()" ${LANG === 'ar' ? 'lang="en"' : 'lang="ar"'}>${ic('globe')}${LANG === 'ar' ? 'English' : 'العربية'}</button>
@@ -378,7 +386,7 @@ function pageView() {
 function brandBlock() {
   const b = S.brand || {};
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-    <div><img class="blogo" style="height:52px" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><div class="sm mut" style="margin-top:4px"><b style="color:var(--ydark)">ChequeTrack</b> · ${t('cheque management')}</div></div>
+    <div style="display:flex;align-items:center;gap:10px;min-width:0"><img class="blogo" style="height:44px;flex:none" src="${esc(b.logo || '/img/logo.svg')}" alt="${esc(b.company || 'Equpation')}"><div style="min-width:0"><div class="bname">ChequeTrack</div><div class="sm mut">${t('cheque management')}</div></div></div>
     <button class="btn btn-o btn-sm" onclick="setLang(LANG==='ar'?'en':'ar');render()">${LANG === 'ar' ? 'English' : 'العربية'}</button></div>`;
 }
 function authView() {
