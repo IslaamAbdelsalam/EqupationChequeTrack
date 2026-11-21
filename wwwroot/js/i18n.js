@@ -48,6 +48,8 @@ const AR = {
 "Go-live checklist": "قائمة جاهزية التشغيل",
 "Setup": "الإعداد",
 "Main menu": "القائمة الرئيسية",
+"Operations": "العمليات",
+"Administration": "الإدارة",
 "My profile": "ملفي الشخصي",
 "Sign out": "تسجيل الخروج",
 "Menu": "القائمة",
