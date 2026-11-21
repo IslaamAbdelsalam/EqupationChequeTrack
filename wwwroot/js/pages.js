@@ -61,7 +61,7 @@ function homePage() {
   return `<div class="phead"><div><h1 class="h1">${t('Home')}</h1><div class="sub2">${t(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(today() + 'T12:00:00Z').getUTCDay()])}, ${FD(today())}</div></div>
     ${can.request() ? `<a class="btn btn-y" href="#/new">${ic('plus')}${t('New request')}</a>` : ''}</div>
    <div class="kpis">${kp}</div>
-   <div class="row"><div class="col2">${waitCard}</div><div class="col1">${rateCard}${dueCard}</div></div>
+   <div class="row eq"><div class="col2">${waitCard}</div><div class="col1">${rateCard}${dueCard}</div></div>
    ${homeCharts()}`;
 }
 
