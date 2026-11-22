@@ -73,13 +73,129 @@ public class AppSettings
     public bool FuncConfirmed { get; set; }
 }
 
+/// Keys of the six built-in roles. Added roles get the key R{id}.
 public static class Roles
 {
     public const string TOP = "TOP", CFO = "CFO", FIN = "FIN", USER = "USER", ADMIN = "ADMIN", AUDIT = "AUDIT";
-    public static readonly string[] All = { USER, FIN, CFO, TOP, ADMIN, AUDIT };
-    public static bool SeeAll(string r) => r != USER;
-    public static bool CanRequest(string r) => r == USER || r == FIN || r == CFO || r == TOP;
-    public static bool ClearOrReturn(string r) => r == FIN || r == CFO;
+}
+
+/// What a role may do: for each page, "view" opens it, create/edit/delete are the rights on its records,
+/// and the other operations are workflow steps on that page. The server checks every action against this.
+public static class Perm
+{
+    public const string V = "view", C = "create", E = "edit", X = "delete";
+    public static readonly string[] Scopes = { "own", "dept", "all" };
+
+    public sealed record Page(string Key, string Group, string[] Ops);
+    public static readonly Page[] Catalog =
+    {
+        new("requests", "ops", new[] { V, C, X }),            // own requests: raise, cancel while pending
+        new("cheques", "ops", new[] { V }),                   // the cheques list (own department or all, by scope)
+        new("approvals", "ops", new[] { V, "approve", "approve2" }),
+        new("issue", "ops", new[] { V, "issue" }),
+        new("followup", "ops", new[] { V, "clear", "settle" }),
+        new("contracts", "ops", new[] { V, C, E, X, "follow" }),
+        new("poa", "ops", new[] { V, "settle" }),
+        new("rates", "ops", new[] { V, C, E }),
+        new("reports", "fin", new[] { V }),
+        new("entries", "fin", new[] { V, "post" }),
+        new("banks", "fin", new[] { V, C, E }),
+        new("books", "fin", new[] { V, C, E }),
+        new("voided", "fin", new[] { V, C }),
+        new("users", "users", new[] { V, C, E }),
+        new("roles", "users", new[] { V, C, E, X }),
+        new("departments", "users", new[] { V, C, E, X }),
+        new("security", "users", new[] { V, E }),             // sign-in and password policy
+        new("beneficiaries", "data", new[] { V, C, E, X }),
+        new("entities", "data", new[] { V, C, E }),
+        new("settings", "system", new[] { V, E }),
+        new("telegram", "system", new[] { V, E, "send" }),
+        new("audit", "system", new[] { V }),
+        new("checklist", "system", new[] { V }),
+    };
+    static readonly Dictionary<string, string[]> OpsOf = Catalog.ToDictionary(p => p.Key, p => p.Ops);
+
+    /// Rights only an administrator may hand out: nobody can give a role (or an account) more of these than they hold.
+    public static readonly (string Page, string Op)[] Powers =
+        { ("users", C), ("users", E), ("roles", C), ("roles", E), ("roles", X), ("security", E), ("settings", E) };
+
+    public static Dictionary<string, HashSet<string>> Parse(string json)
+    {
+        var p = new Dictionary<string, HashSet<string>>();
+        Dictionary<string, string[]> raw;
+        try { raw = JsonSerializer.Deserialize<Dictionary<string, string[]>>(string.IsNullOrWhiteSpace(json) ? "{}" : json); } catch { raw = null; }
+        if (raw == null) return p;
+        foreach (var (page, ops) in raw)
+        {
+            if (page == null || ops == null || !OpsOf.TryGetValue(page, out var allowed)) continue;
+            var set = new HashSet<string>(ops.Where(o => allowed.Contains(o)));
+            if (set.Count > 0) p[page] = set;
+        }
+        return p;
+    }
+    public static string Write(Dictionary<string, HashSet<string>> p) =>
+        JsonSerializer.Serialize(Catalog.Where(c => p.TryGetValue(c.Key, out var s) && s.Count > 0)
+            .ToDictionary(c => c.Key, c => c.Ops.Where(o => p[c.Key].Contains(o)).ToArray()));
+    public static Dictionary<string, string[]> View(Dictionary<string, HashSet<string>> p) =>
+        Catalog.Where(c => p.TryGetValue(c.Key, out var s) && s.Count > 0).ToDictionary(c => c.Key, c => c.Ops.Where(o => p[c.Key].Contains(o)).ToArray());
+    public static bool Has(Dictionary<string, HashSet<string>> p, string page, string op = V) => p.TryGetValue(page, out var s) && s.Contains(op);
+    public static bool IsAdmin(Dictionary<string, HashSet<string>> p) => Has(p, "users", E) && Has(p, "roles", E);
+    public static string Summary(Dictionary<string, HashSet<string>> p) => p.Count == 0 ? "no access" : $"{p.Count} pages, {p.Sum(x => x.Value.Count)} rights";
+
+    static Dictionary<string, HashSet<string>> P(params string[] items)
+    {
+        var p = new Dictionary<string, HashSet<string>>();
+        foreach (var it in items) { var i = it.IndexOf(':'); p[it[..i]] = new HashSet<string>(it[(i + 1)..].Split(',')); }
+        return p;
+    }
+
+    /// The six built-in roles carry exactly the access the fixed roles had before roles became editable.
+    public static readonly (string Key, string En, string Ar, string Scope, Dictionary<string, HashSet<string>> P)[] BuiltIns =
+    {
+        (Roles.USER, "Department User", "مستخدم إدارة", "own", P("requests:view,create,delete", "rates:view", "beneficiaries:create")),
+        (Roles.FIN, "Finance", "المالية", "all", P("requests:view,create,delete", "cheques:view", "issue:view,issue", "followup:view,clear,settle",
+            "contracts:view,create,edit,delete,follow", "poa:view,settle", "rates:view,create,edit", "reports:view", "entries:view,post",
+            "banks:view", "books:view", "voided:view,create", "beneficiaries:view,create,edit,delete", "telegram:view,send")),
+        (Roles.CFO, "CFO", "المدير المالي", "all", P("requests:view,create,delete", "cheques:view", "approvals:view,approve", "followup:view,clear,settle",
+            "contracts:view,follow", "poa:view", "rates:view", "reports:view", "entries:view", "banks:view,create,edit", "books:view,create,edit",
+            "voided:view,create", "beneficiaries:view,create", "telegram:view,edit,send", "checklist:view")),
+        (Roles.TOP, "Top Management", "الإدارة العليا", "all", P("requests:view,create,delete", "cheques:view", "approvals:view,approve2", "followup:view",
+            "contracts:view", "poa:view", "rates:view", "reports:view", "entries:view", "banks:view", "books:view", "voided:view",
+            "beneficiaries:view,create", "telegram:view,send")),
+        (Roles.ADMIN, "System Admin", "مسؤول النظام", "all", P("cheques:view", "followup:view", "contracts:view", "poa:view", "rates:view", "reports:view",
+            "entries:view", "banks:view", "books:view", "voided:view", "users:view,create,edit", "roles:view,create,edit,delete",
+            "departments:view,create,edit,delete", "security:view,edit", "beneficiaries:view", "entities:view,create,edit",
+            "settings:view,edit", "telegram:view,edit,send", "audit:view", "checklist:view")),
+        (Roles.AUDIT, "Auditor", "مدقق", "all", P("cheques:view", "followup:view", "contracts:view", "poa:view", "rates:view", "reports:view",
+            "entries:view", "banks:view", "books:view", "voided:view", "roles:view", "beneficiaries:view", "telegram:view", "audit:view")),
+    };
+
+    /// Until some active user has a role that manages users and roles, the CFO also does that job (as before).
+    public static readonly Dictionary<string, HashSet<string>> CfoActingAdmin = P("users:view,create,edit", "roles:view,create,edit,delete",
+        "departments:view,create,edit,delete", "security:view,edit", "entities:view,create,edit", "settings:view,edit", "telegram:view,edit,send",
+        "audit:view", "checklist:view");
+}
+
+/// The effective access of one signed-in user.
+public sealed class Access
+{
+    public string Scope { get; init; } = "own";
+    public Dictionary<string, HashSet<string>> P { get; init; } = new();
+    public bool Has(string page, string op = Perm.V) => Perm.Has(P, page, op);
+    /// Whether the user may see (and act on) this cheque.
+    public bool Sees(AppUser u, Cheque c) => c != null && (Scope == "all" || c.RequesterId == u.Id || (Scope == "dept" && c.DeptId == u.DeptId));
+    public static Access Of(AppUser u, IEnumerable<Role> roles, bool anyAdmin)
+    {
+        var r = roles.FirstOrDefault(x => x.Key == u.Role);
+        var p = r == null ? new Dictionary<string, HashSet<string>>() : Perm.Parse(r.Perms);
+        if (u.Role == Roles.CFO && !anyAdmin)
+            foreach (var (page, ops) in Perm.CfoActingAdmin)
+            {
+                if (!p.TryGetValue(page, out var set)) p[page] = set = new HashSet<string>();
+                set.UnionWith(ops);
+            }
+        return new Access { Scope = r != null && Perm.Scopes.Contains(r.Scope) ? r.Scope : "own", P = p };
+    }
 }
 
 public static class St
@@ -99,6 +215,7 @@ public static class Lists
     public static readonly string[] BenTypes = { "Supplier", "Financier", "Customer", "Employee", "Other" };
     public static readonly string[] SolveMethods = { "Replacement cheque", "Transfer", "Obligation cancelled" };
     public static readonly string[] Priorities = { "Normal", "Urgent" };
+    public static readonly string[] CloseReasons = { "Fully settled", "Not renewed", "Cancelled", "Other" };
 }
 
 public static class Fx
@@ -359,10 +476,23 @@ public class Notifier
             ("🟣 WAITING APPROVAL", open.Where(c => (c.Status == "Pending" || c.Status == "Pending2") && InW(c)).ToList(), c => c.Status == "Pending2" ? "second approval (Top Management)" : "CFO approval")
         };
         groups = groups.Where(g => g.l.Count > 0).ToList();
-        var count = groups.Sum(g => g.l.Count);
+
+        // contracts: expired, inside their reminder period, or with a follow-up due
+        static string Exp(Contract k) => string.IsNullOrEmpty(k.ExpiryDate) ? k.EndDate : k.ExpiryDate;
+        var ks = (await db.Contracts.AsNoTracking().ToListAsync()).Where(k => k.Status != "Closed").ToList();
+        var kExpired = ks.Where(k => Clock.DaysUntil(s, Exp(k)) < 0).OrderBy(Exp).ToList();
+        var kSoon = ks.Where(k => { var n = Clock.DaysUntil(s, Exp(k)); return n >= 0 && n <= Math.Max(1, k.NoticeDays); }).OrderBy(Exp).ToList();
+        var kFollow = ks.Where(k => !kExpired.Contains(k) && !kSoon.Contains(k) && !string.IsNullOrEmpty(k.FollowUpDate) && Clock.DaysUntil(s, k.FollowUpDate) <= 0)
+            .OrderBy(k => k.FollowUpDate).ToList();
+        var kGroups = new List<(string h, List<Contract> l)>
+        {
+            ("📄 CONTRACTS EXPIRED — renew or close", kExpired), ("📄 CONTRACTS EXPIRING", kSoon), ("📝 CONTRACT FOLLOW-UPS DUE", kFollow)
+        }.Where(g => g.l.Count > 0).ToList();
+
+        var count = groups.Sum(g => g.l.Count) + kGroups.Sum(g => g.l.Count);
         if (count == 0) return ("", 0);
         var sb = new StringBuilder();
-        sb.Append("🔔 <b>Daily cheque alert</b> — ").Append(Fmt.D(Clock.Today(s))).Append("\n(alert window: ").Append(w).Append(" days)\n");
+        sb.Append(kGroups.Count > 0 ? "🔔 <b>Daily cheque & contract alert</b> — " : "🔔 <b>Daily cheque alert</b> — ").Append(Fmt.D(Clock.Today(s))).Append("\n(alert window: ").Append(w).Append(" days)\n");
         foreach (var g in groups)
         {
             sb.Append("\n<b>").Append(Fmt.H(g.h)).Append("</b> (").Append(g.l.Count).Append(")\n");
@@ -373,6 +503,19 @@ public class Notifier
                 if (!string.IsNullOrEmpty(c.ChequeNo)) sb.Append(" · #").Append(Fmt.H(c.ChequeNo));
                 var e = g.x(c);
                 if (!string.IsNullOrEmpty(e)) sb.Append("\n   ").Append(Fmt.H(e));
+                sb.Append('\n');
+            }
+        }
+        foreach (var g in kGroups)
+        {
+            sb.Append("\n<b>").Append(Fmt.H(g.h)).Append("</b> (").Append(g.l.Count).Append(")\n");
+            foreach (var k in g.l)
+            {
+                var n = Clock.DaysUntil(s, Exp(k));
+                sb.Append("• ").Append(Fmt.H(k.OpNo)).Append(" · ").Append(Fmt.H(bens.GetValueOrDefault(k.FinancierId))).Append('\n');
+                sb.Append("   ").Append(n < 0 ? $"expired {-n}d ago" : n == 0 ? "expires TODAY" : $"expires {Fmt.D(Exp(k))} (in {n}d)");
+                if (!string.IsNullOrEmpty(k.FollowUpDate)) sb.Append(" · follow-up ").Append(Fmt.D(k.FollowUpDate));
+                if (k.OwnerId.HasValue && users.TryGetValue(k.OwnerId.Value, out var on)) sb.Append(" · ").Append(Fmt.H(Fmt.First(on)));
                 sb.Append('\n');
             }
         }

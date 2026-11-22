@@ -54,6 +54,13 @@ public static class Schema
             [UserId] int NOT NULL, [TokenHash] nvarchar(64) NULL, [ExpUtc] datetime2 NOT NULL, [UsedUtc] datetime2 NULL, [CreatedUtc] datetime2 NOT NULL)",
         @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PwdResets_TokenHash' AND object_id = OBJECT_ID(N'dbo.PwdResets'))
             CREATE INDEX IX_PwdResets_TokenHash ON dbo.PwdResets([TokenHash])",
+        // v3: roles and permissions
+        @"IF OBJECT_ID(N'dbo.Roles', N'U') IS NULL CREATE TABLE dbo.Roles (
+            [Id] int IDENTITY(1,1) NOT NULL CONSTRAINT PK_Roles PRIMARY KEY,
+            [Key] nvarchar(10) NULL, [NameEn] nvarchar(100) NULL, [NameAr] nvarchar(100) NULL, [DeptId] int NULL, [Scope] nvarchar(10) NULL,
+            [Perms] nvarchar(max) NULL, [BuiltIn] bit NOT NULL, [Notes] nvarchar(300) NULL, [UpdatedBy] nvarchar(150) NULL, [UpdatedAt] nvarchar(20) NULL)",
+        @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Roles_Key' AND object_id = OBJECT_ID(N'dbo.Roles'))
+            CREATE UNIQUE INDEX IX_Roles_Key ON dbo.Roles([Key]) WHERE [Key] IS NOT NULL",
     };
 
     // table, column, type (NOT NULL columns get a default so existing rows stay valid)
@@ -88,6 +95,11 @@ public static class Schema
         ("Cheques", "ClearRateBy", "nvarchar(150) NULL"), ("Cheques", "ClearUsdEq", "decimal(18,2) NULL"), ("Cheques", "ClearFuncVal", "decimal(18,2) NULL"),
         ("Cheques", "ClearFxDiff", "decimal(18,2) NULL"), ("Cheques", "SolveMethod", "nvarchar(30) NULL"),
         ("Cheques", "PoaSettledBy", "nvarchar(150) NULL"), ("Cheques", "PoaSettledAt", "nvarchar(20) NULL"), ("Cheques", "PoaRef", "nvarchar(150) NULL"),
+        // v3
+        ("Users", "FullNameAr", "nvarchar(150) NULL"),
+        ("Contracts", "ExpiryDate", "nvarchar(10) NULL"), ("Contracts", "NoticeDays", "int NOT NULL CONSTRAINT DF_Contracts_NoticeDays DEFAULT 30"),
+        ("Contracts", "OwnerId", "int NULL"), ("Contracts", "FollowUpDate", "nvarchar(10) NULL"), ("Contracts", "Status", "nvarchar(20) NULL"),
+        ("Contracts", "ClosedAt", "nvarchar(20) NULL"), ("Contracts", "ClosedBy", "nvarchar(150) NULL"), ("Contracts", "CloseReason", "nvarchar(300) NULL"),
     };
 
     public static async Task Upgrade(AppDb db, SettingsStore ss, ILogger log)
@@ -139,6 +151,18 @@ public static class Schema
             await db.SaveChangesAsync();
             log.LogInformation("Upgraded {Count} cheques from the first release", legacy.Count);
         }
+
+        // v3: built-in roles carry exactly the access the fixed roles had, so nobody's access changes on upgrade
+        var haveRoles = (await db.Roles.Select(r => r.Key).ToListAsync()).ToHashSet();
+        var addRoles = Perm.BuiltIns.Where(d => !haveRoles.Contains(d.Key)).ToList();
+        foreach (var d in addRoles)
+            db.Roles.Add(new Role { Key = d.Key, NameEn = d.En, NameAr = d.Ar, Scope = d.Scope, Perms = Perm.Write(d.P), BuiltIn = true, Notes = "", UpdatedBy = "System", UpdatedAt = "" });
+        if (addRoles.Count > 0) { await db.SaveChangesAsync(); log.LogInformation("Added {Count} built-in roles", addRoles.Count); }
+
+        // v3: existing contracts expire at the end of their term until someone sets another expiry date
+        var kOld = await db.Contracts.Where(k => k.ExpiryDate == null || k.Status == null).ToListAsync();
+        foreach (var k in kOld) { k.ExpiryDate ??= k.EndDate; k.Status ??= "Active"; if (k.NoticeDays <= 0) k.NoticeDays = 30; }
+        if (kOld.Count > 0) await db.SaveChangesAsync();
 
         // users from the first release have no language yet
         await db.Database.ExecuteSqlRawAsync("UPDATE dbo.Users SET Lang = N'en' WHERE Lang IS NULL");

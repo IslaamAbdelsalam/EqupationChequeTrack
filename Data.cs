@@ -27,8 +27,8 @@ public class AppUser
 {
     public int Id { get; set; }
     [MaxLength(60)] public string Username { get; set; } = "";
-    [MaxLength(150)] public string FullName { get; set; } = "";
-    [MaxLength(10)] public string Role { get; set; } = "USER"; // TOP, CFO, FIN, USER, ADMIN, AUDIT
+    [MaxLength(150)] public string FullName { get; set; } = "";   // English name
+    [MaxLength(10)] public string Role { get; set; } = "USER";    // Roles.Key: TOP, CFO, FIN, USER, ADMIN, AUDIT or R{id} for added roles
     public int DeptId { get; set; }
     public bool Active { get; set; } = true;
     [MaxLength(100)] public string PwdHash { get; set; } = "";
@@ -44,6 +44,25 @@ public class AppUser
     [MaxLength(100)] public string TwoFaHash { get; set; } = "";
     public DateTime? TwoFaExpUtc { get; set; }
     public int TwoFaTries { get; set; }
+    // added in v3
+    [MaxLength(150)] public string FullNameAr { get; set; } = "";
+}
+
+/// A role: what its users may open and do (pages × view/create/edit/delete plus workflow steps),
+/// which cheques they see (own, own department, all) and, optionally, the department it belongs to.
+public class Role
+{
+    public int Id { get; set; }
+    [MaxLength(10)] public string Key { get; set; } = "";            // USER, FIN, CFO, TOP, ADMIN, AUDIT (built in) or R{Id}
+    [MaxLength(100)] public string NameEn { get; set; } = "";
+    [MaxLength(100)] public string NameAr { get; set; } = "";
+    public int? DeptId { get; set; }                                 // null = any department
+    [MaxLength(10)] public string Scope { get; set; } = "own";      // own | dept | all
+    public string Perms { get; set; } = "{}";                        // JSON {page: [ops]}, see Perm.Catalog
+    public bool BuiltIn { get; set; }
+    [MaxLength(300)] public string Notes { get; set; } = "";
+    [MaxLength(150)] public string UpdatedBy { get; set; } = "";
+    [MaxLength(20)] public string UpdatedAt { get; set; } = "";
 }
 
 public class Beneficiary
@@ -127,6 +146,15 @@ public class Contract
     public string Log { get; set; } = "[]"; // JSON list of {at, by, text}
     [MaxLength(150)] public string CreatedBy { get; set; } = "";
     [MaxLength(20)] public string CreatedAt { get; set; } = "";
+    // added in v3: expiry and follow-up
+    [MaxLength(10)] public string ExpiryDate { get; set; }          // contract expiry (defaults to the end of the term)
+    public int NoticeDays { get; set; } = 30;                        // start following up this many days before expiry
+    public int? OwnerId { get; set; }                                // user who follows it up
+    [MaxLength(10)] public string FollowUpDate { get; set; }        // next follow-up date
+    [MaxLength(20)] public string Status { get; set; } = "Active";  // Active | Closed
+    [MaxLength(20)] public string ClosedAt { get; set; }
+    [MaxLength(150)] public string ClosedBy { get; set; }
+    [MaxLength(300)] public string CloseReason { get; set; }
 }
 
 public class ChequeLine
@@ -319,6 +347,7 @@ public class AppDb : DbContext, IDataProtectionKeyContext
     public DbSet<Department> Departments => Set<Department>();
     public DbSet<Entity> Entities => Set<Entity>();
     public DbSet<AppUser> Users => Set<AppUser>();
+    public DbSet<Role> Roles => Set<Role>();
     public DbSet<Beneficiary> Beneficiaries => Set<Beneficiary>();
     public DbSet<Rate> Rates => Set<Rate>();
     public DbSet<Bank> Banks => Set<Bank>();
@@ -339,6 +368,7 @@ public class AppDb : DbContext, IDataProtectionKeyContext
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<AppUser>().HasIndex(x => x.Username).IsUnique();
+        b.Entity<Role>().HasIndex(x => x.Key).IsUnique();
         b.Entity<Cheque>().HasIndex(x => x.Seq).IsUnique();
         b.Entity<Cheque>().HasIndex(x => x.Status);
         b.Entity<Cheque>().HasIndex(x => x.RequesterId);

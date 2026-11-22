@@ -21,7 +21,8 @@ function need2Reasons(usd, related, prior) {
 
 /* =================== HOME =================== */
 function homePage() {
-  const r = R(), me = S.user.id, L = visible(), tasks = myTasks();
+  const me = S.user.id, L = visible(), tasks = myTasks();
+  const r = can.approve() ? 'CFO' : can.approve2() ? 'TOP' : can.issue() ? 'FIN' : has('users', 'edit') ? 'ADMIN' : has('audit') ? 'AUDIT' : 'USER';
   const k = (l, v, d) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div>${d ? `<div class="d">${d}</div>` : ''}</div>`;
   const usd = arr => arr.reduce((s, c) => s + usdOf(c), 0);
   const committed = L.filter(c => ['Approved', 'Posted', 'Received', 'Delivered'].includes(c.status));
@@ -40,7 +41,7 @@ function homePage() {
   const jump = (rt && prev) ? Math.abs(rt.SDG - prev.SDG) / prev.SDG * 100 : 0;
   const rateCard = `<section class="card"><div class="chead"><h2 class="h3">${rtToday ? t("Today's rate") : t('Latest rate')}</h2><span class="sm mut">${rt ? FD(rt.date) : ''}</span></div>
     ${rt ? `<div style="display:grid;gap:4px;margin-top:8px;font-size:20px;font-weight:600"><div><bdi dir="ltr">1 USD = ${rnum(rt.QAR)} QAR</bdi></div><div><bdi dir="ltr">1 USD = ${rnum(rt.SDG)} SDG</bdi></div></div>
-    <div class="sm mut" style="margin-top:8px">${t('Source')}: ${esc(rt.source || '—')} · ${t('entered by {n}', { n: esc(rt.setBy) })} ${FD(rt.setAt)}</div>
+    <div class="sm mut" style="margin-top:8px">${t('Source')}: ${esc(rt.source || '—')} · ${t('entered by {n}', { n: esc(byN(rt.setBy)) })} ${FD(rt.setAt)}</div>
     ${jump > +D.settings.rateAlertPct ? `<div class="warnbox sm" style="margin-top:10px">${ic('alert')}<span>${t('SDG moved {p}% from {d}.', { p: jump.toFixed(1), d: fd(prev.date) })}</span></div>` : ''}
     ${!rtToday ? `<div class="warnbox sm" style="margin-top:10px">${ic('alert')}<span>${t("Today's rate has not been entered yet.")}</span></div>` : ''}` : `<div class="empty">${t('No exchange rate yet.')}</div>`}
     <a class="sm" href="#/rates" style="display:inline-block;margin-top:10px">${t('All exchange rates')}</a></section>`;
@@ -49,10 +50,14 @@ function homePage() {
     <div style="flex:0 0 100px">${dueTxt(c)}</div><div style="flex:1 1 150px;min-width:0"><a class="lnk" href="#/cheque/${c.id}">${esc(nm(B(c.benId)))}</a><div class="sm mut"><bdi dir="ltr">${c.id}</bdi> · ${payTxt(c)}</div><div style="margin-top:6px">${chip(c.status)}</div></div></div>`).join('') : `<div class="empty sm">${t('Nothing due this week.')}</div>`}</section>`;
 
   const taskRows = tasks.slice(0, 8).map(x => {
+    if (x.kind === 'contract') { const k = x.k, s = kState(k);
+      return `<div class="task"><div style="flex:1 1 240px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${esc(k.opNo)}</bdi>${kChip(k)}${s.due ? `<span class="chip c-2nd">${t('Follow-up due')}</span>` : ''}</div>
+        <div style="margin-top:3px">${esc(nm(B(k.financierId)))}</div><div class="sm mut">${t('Contract expiry {d}', { d: fd(kExp(k)) })}${k.followUpDate ? ' · ' + t('next follow-up {d}', { d: fd(k.followUpDate) }) : ''}</div></div>
+        <button class="btn btn-y btn-sm" onclick="kFollowModal(${k.id})">${x.act}</button></div>`; }
     if (x.kind === 'rate') return `<div class="task"><div style="flex:1 1 240px"><div class="b">${t("Today's exchange rate is missing")}</div><div class="sm mut">${t('Approvals, issues and clearing need it.')}</div></div><a class="btn btn-y btn-sm" href="#/rates">${x.act}</a></div>`;
     const c = x.c, need = c.status === 'Pending' ? need2Reasons(usdOf(c), c.related, c.priorPaid) : [];
     return `<div class="task"><div style="flex:1 1 240px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${c.id}</bdi>${chip(c.status)}</div>
-      <div style="margin-top:3px">${esc(nm(B(c.benId)))}</div><div class="sm mut">${esc(nm(E(c.entityId)))} · ${t(c.opType)} · ${t('from {n}', { n: esc(U(c.requesterId).fullName) })}</div></div>
+      <div style="margin-top:3px">${esc(nm(B(c.benId)))}</div><div class="sm mut">${esc(nm(E(c.entityId)))} · ${t(c.opType)} · ${t('from {n}', { n: esc(UN(c.requesterId)) })}</div></div>
       <div style="text-align:end"><div class="b">${payTxt(c)}</div><div class="sm mut">${c.currency !== 'USD' ? M(usdOf(c), 'USD') : ''}${need.length ? ' · ' + esc(need.join(', ')) : ''}</div></div>
       <a class="btn btn-y btn-sm" href="#/cheque/${c.id}">${x.act}</a></div>`;
   }).join('');
@@ -61,12 +66,21 @@ function homePage() {
   return `<div class="phead"><div><h1 class="h1">${t('Home')}</h1><div class="sub2">${t(['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date(today() + 'T12:00:00Z').getUTCDay()])}, ${FD(today())}</div></div>
     ${can.request() ? `<a class="btn btn-y" href="#/new">${ic('plus')}${t('New request')}</a>` : ''}</div>
    <div class="kpis">${kp}</div>
-   <div class="row eq"><div class="col2">${waitCard}</div><div class="col1">${rateCard}${dueCard}</div></div>
+   <div class="row eq"><div class="col2">${waitCard}</div><div class="col1">${rateCard}${dueCard}${kHomeCard()}</div></div>
    ${homeCharts()}`;
 }
 
+/** Contracts that need attention, for roles that open the contracts register. */
+function kHomeCard() {
+  if (!has('contracts')) return '';
+  const L = D.contracts.filter(k => kState(k).attention).sort((a, b) => kExp(a) < kExp(b) ? -1 : 1);
+  if (!L.length) return '';
+  return `<section class="card"><div class="chead"><h2 class="h3">${t('Contracts to follow up')}</h2><a class="sm" href="#/contracts" onclick="F('k').tab='att'">${t('Open register')}</a></div>
+    ${L.slice(0, 5).map(k => `<div class="task" style="gap:12px"><div style="flex:1 1 150px;min-width:0"><a class="lnk" href="javascript:void(0)" onclick="kModal(${k.id})"><bdi dir="ltr">${esc(k.opNo)}</bdi> · ${esc(nm(B(k.financierId)))}</a>
+      <div class="sm mut">${t('Expiry')} ${FD(kExp(k))}${k.ownerId ? ' · ' + esc(UN(k.ownerId)) : ''}</div></div>${kChip(k)}</div>`).join('')}${L.length > 5 ? `<div class="sm mut" style="margin-top:8px">${t('{n} more', { n: L.length - 5 })}</div>` : ''}</section>`;
+}
 function homeCharts() {
-  const L = can.seeAll() ? visible() : mine();
+  const L = has('cheques') ? visible() : mine();
   if (!L.length) return '';
   const usdT = v => money(v, 'USD');
   const open = L.filter(c => ['Pending', 'Pending2', ...OPEN].includes(c.status));
@@ -96,7 +110,7 @@ function chqTable(key, rows, empty) {
   const p = pageOf(key, rows);
   if (!rows.length) return `<div class="empty">${empty || t('No cheques here.')}</div>`;
   return `<div class="tw"><table class="tbl cards"><thead><tr><th>${t('Cheque')}</th><th>${t('Entity')}</th><th class="num">${t('Amount')}</th><th>${t('Due date')}</th><th>${t('Stage')}</th></tr></thead><tbody>
-   ${p.rows.map(c => `<tr class="click" onclick="go('cheque/${c.id}')"><td><a class="lnk" href="#/cheque/${c.id}" onclick="event.stopPropagation()"><bdi dir="ltr">${c.id}</bdi> · ${esc(nm(B(c.benId)))}</a><div class="sm mut">${t(c.opType)} · ${esc(U(c.requesterId).fullName)}</div></td>
+   ${p.rows.map(c => `<tr class="click" onclick="go('cheque/${c.id}')"><td><a class="lnk" href="#/cheque/${c.id}" onclick="event.stopPropagation()"><bdi dir="ltr">${c.id}</bdi> · ${esc(nm(B(c.benId)))}</a><div class="sm mut">${t(c.opType)} · ${esc(UN(c.requesterId))}</div></td>
      <td data-h="${t('Entity')}">${esc(nm(E(c.entityId)))}</td><td class="num" data-h="${t('Amount')}"><div class="b">${payTxt(c)}</div>${(c.payCur || c.currency) !== 'USD' ? `<div class="sm mut">${M(usdOf(c), 'USD')}</div>` : ''}</td>
      <td data-h="${t('Due date')}" style="white-space:nowrap">${dueTxt(c)}</td><td data-h="${t('Stage')}">${chip(c.status)}</td></tr>`).join('')}
    </tbody></table></div>${pager(key, p)}`;
@@ -106,7 +120,7 @@ function chqList(key, list, tabs, empty) {
   const tab = tabs.find(x => x.k === f.tab) || tabs[0];
   const q = f.q.trim().toLowerCase();
   let rows = list.filter(tab.f);
-  if (q) rows = rows.filter(c => (c.id + ' ' + B(c.benId).nameEn + ' ' + (B(c.benId).nameAr || '') + ' ' + U(c.requesterId).fullName + ' ' + (c.issue ? c.issue.no : '') + ' ' + (c.docNo || '') + ' ' + (c.reason || '')).toLowerCase().includes(q));
+  if (q) rows = rows.filter(c => (c.id + ' ' + B(c.benId).nameEn + ' ' + (B(c.benId).nameAr || '') + ' ' + U(c.requesterId).fullName + ' ' + (U(c.requesterId).fullNameAr || '') + ' ' + (c.issue ? c.issue.no : '') + ' ' + (c.docNo || '') + ' ' + (c.reason || '')).toLowerCase().includes(q));
   if (f.ent) rows = rows.filter(c => String(c.entityId) === f.ent);
   if (f.cur) rows = rows.filter(c => (c.payCur || c.currency) === f.cur || c.currency === f.cur);
   if (f.from || f.to) rows = rows.filter(c => inRange(f, c.dueDate));
@@ -128,8 +142,9 @@ function exportCheques() {
 }
 const closedSt = ['Cleared', 'Solved', 'Rejected', 'Cancelled'];
 function chequesPage() {
-  if (!can.seeAll()) return denied();
-  return `<div class="phead"><div><h1 class="h1">${t('All cheques')}</h1><div class="sub2">${t('Every request and cheque, by stage')}</div></div></div>` +
+  if (!has('cheques')) return denied();
+  const sc = S.user.scope;
+  return `<div class="phead"><div><h1 class="h1">${sc === 'all' ? t('All cheques') : sc === 'dept' ? t('Department cheques') : t('Cheques')}</h1><div class="sub2">${sc === 'dept' ? t('Requests raised in your department, by stage') : t('Every request and cheque, by stage')}</div></div></div>` +
     chqList('all', visible(), [
       { k: 'all', label: t('All'), f: () => true },
       { k: 'p1', label: t('Pending CFO'), f: c => c.status === 'Pending' },
@@ -142,7 +157,7 @@ function chequesPage() {
 function minePage() {
   const my = mine(), acts = myTasks().filter(x => x.mine);
   const box = acts.length ? `<section class="card act"><h2 class="h3" style="color:var(--ydark)">${t('Action needed from you')}</h2>${acts.map(x => `<div class="task"><div style="flex:1 1 240px"><bdi class="b" dir="ltr">${x.c.id}</bdi> · ${esc(nm(B(x.c.benId)))} · ${payTxt(x.c)}
-     <div class="sm mut">${x.kind === 'recv' ? t('{n} issued this cheque to you. Confirm when you have it.', { n: esc(x.c.issue.by) }) : t('Confirm when you hand it to the beneficiary.')}</div></div><a class="btn btn-y btn-sm" href="#/cheque/${x.c.id}">${x.act}</a></div>`).join('')}</section>` : '';
+     <div class="sm mut">${x.kind === 'recv' ? t('{n} issued this cheque to you. Confirm when you have it.', { n: esc(byN(x.c.issue.by)) }) : t('Confirm when you hand it to the beneficiary.')}</div></div><a class="btn btn-y btn-sm" href="#/cheque/${x.c.id}">${x.act}</a></div>`).join('')}</section>` : '';
   return `<div class="phead"><div><h1 class="h1">${t('My requests')}</h1><div class="sub2">${t('Every request you raised and where it is now')}</div></div><a class="btn btn-y" href="#/new">${ic('plus')}${t('New request')}</a></div>${box}` +
     chqList('mine', my, [
       { k: 'all', label: t('All'), f: () => true },
@@ -153,14 +168,15 @@ function minePage() {
       { k: 'cl', label: t('Closed'), f: c => closedSt.includes(c.status) || c.status === 'Returned' }], t('You have not raised any requests yet.'));
 }
 function approvalsPage() {
-  if (!(can.approve() || can.approve2())) return denied();
+  if (!has('approvals')) return denied();
   const me = S.user.id;
-  const list = visible().filter(c => can.approve() ? c.status === 'Pending' : c.status === 'Pending2');
-  return `<div class="phead"><div><h1 class="h1">${t('Approvals')}</h1><div class="sub2">${can.approve() ? t('First approval: the rate of the document date is locked and saved with the cheque.') : t('Second approval: above the limit, related party, or paid before the request.')}</div></div></div>` +
+  const a1 = can.approve(), a2 = can.approve2(), any = !a1 && !a2; // view only: both stages
+  const list = visible().filter(c => ((a1 || any) && c.status === 'Pending') || ((a2 || any) && c.status === 'Pending2'));
+  return `<div class="phead"><div><h1 class="h1">${t('Approvals')}</h1><div class="sub2">${a2 && !a1 ? t('Second approval: above the limit, related party, or paid before the request.') : t('First approval: the rate of the document date is locked and saved with the cheque.')}</div></div></div>` +
     chqList('appr', list, [{ k: 'mine', label: t('Waiting for me'), f: c => c.requesterId !== me && !(c.appr && c.appr.byId === me) }, { k: 'all', label: t('All waiting'), f: () => true }], t('No requests are waiting.'));
 }
 function issuePage() {
-  if (!can.issue()) return denied();
+  if (!has('issue')) return denied();
   return `<div class="phead"><div><h1 class="h1">${t('Issue cheques')}</h1><div class="sub2">${t('Approved requests to issue, and cheques being followed up')}</div></div></div>` +
     chqList('iss', visible(), [
       { k: 'ap', label: t('To issue'), f: c => c.status === 'Approved' },
@@ -169,7 +185,7 @@ function issuePage() {
       { k: 'ret', label: t('Returned'), f: c => c.status === 'Returned' }], t('Nothing here.'));
 }
 function followupPage() {
-  if (!can.seeAll()) return denied();
+  if (!has('followup')) return denied();
   const L = visible().filter(c => ['Approved', 'Posted', 'Received', 'Delivered', 'Returned'].includes(c.status));
   const by = (a, b) => a.dueDate < b.dueDate ? -1 : 1, al = D.settings.alertDays;
   return `<div class="phead"><div><h1 class="h1">${t('Due & follow-up')}</h1><div class="sub2">${t('Open cheques, soonest first. The alert window is {n} days.', { n: al })}</div></div></div>` +
@@ -213,7 +229,7 @@ function nfSummary() {
   const n = S.nf, x = nfCalc(), ent = E(+n.entityId);
   const need = x.usd != null ? need2Reasons(x.usd, n.related, n.priorPaid) : need2Reasons(0, n.related, n.priorPaid);
   const checks = [];
-  if (x.fin && can.seeAll()) n.lines.filter(l => l.opNo).forEach(l => {
+  if (x.fin && seesContracts()) n.lines.filter(l => l.opNo).forEach(l => {
     const k = K(l.opNo);
     if (!k) checks.push([false, t('Operation {o} is not in the contracts register', { o: l.opNo })]);
     else if (k.financierId !== +n.benId) checks.push([false, t('Operation {o} belongs to another financier', { o: l.opNo })]);
@@ -251,7 +267,7 @@ function newRequestPage() {
   const opt = (arr, v, lab) => arr.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(lab ? lab(o) : o)}</option>`).join('');
   const contracts = D.contracts.filter(k => k.financierId === +n.benId && k.currency === n.currency);
   const lineRow = (l, i) => `<tr>
-    ${fin ? `<td>${!can.seeAll() ? `<input class="in" aria-label="${t('Operation no.')}" value="${esc(l.opNo)}" oninput="nfl(${i},'opNo',this.value)">` : `<select class="in" aria-label="${t('Operation no.')}" onchange="nfl(${i},'opNo',this.value)"><option value="">${contracts.length ? t('Choose') : t('No contract')}</option>${contracts.map(k => `<option ${k.opNo === l.opNo ? 'selected' : ''}>${esc(k.opNo)}</option>`).join('')}${l.opNo && !contracts.some(k => k.opNo === l.opNo) ? `<option selected>${esc(l.opNo)}</option>` : ''}</select>`}</td>
+    ${fin ? `<td>${!seesContracts() ? `<input class="in" aria-label="${t('Operation no.')}" value="${esc(l.opNo)}" oninput="nfl(${i},'opNo',this.value)">` : `<select class="in" aria-label="${t('Operation no.')}" onchange="nfl(${i},'opNo',this.value)"><option value="">${contracts.length ? t('Choose') : t('No contract')}</option>${contracts.map(k => `<option ${k.opNo === l.opNo ? 'selected' : ''}>${esc(k.opNo)}</option>`).join('')}${l.opNo && !contracts.some(k => k.opNo === l.opNo) ? `<option selected>${esc(l.opNo)}</option>` : ''}</select>`}</td>
       <td><input class="in" aria-label="${t('Instalment')}" value="${esc(l.instNo)}" inputmode="numeric" oninput="nfl(${i},'instNo',this.value)" style="width:84px"></td>
       <td><input class="in" aria-label="${t('Month')}" value="${esc(l.month)}" placeholder="MM/yyyy" dir="ltr" oninput="nfl(${i},'month',this.value)" style="width:104px"></td>`
       : `<td><input class="in" aria-label="${t('Reference')}" value="${esc(l.opNo)}" placeholder="${t('Invoice or PO no.')}" oninput="nfl(${i},'opNo',this.value)"></td>`}
@@ -283,7 +299,7 @@ function newRequestPage() {
       <div class="fg"><label class="lbl" for="nf_pc">${t('Payment currency')} <span class="req">*</span></label><select class="in" id="nf_pc" onchange="nfs('payCur',this.value,true)">${opt(CURS, n.payCur)}</select>
        ${n.payCur !== n.currency ? `<div class="hint">${t('Differs from the contract currency, so the cheque amount is set with the issue-day rate.')}</div>` : ''}</div>
      </div>
-     ${fin && n.benId && !contracts.length && can.seeAll() ? `<div class="warnbox" style="margin-top:14px">${ic('alert')}<span>${t('No contract is registered for this financier in {c}. Finance must register it first.', { c: n.currency })}</span></div>` : ''}
+     ${fin && n.benId && !contracts.length && seesContracts() ? `<div class="warnbox" style="margin-top:14px">${ic('alert')}<span>${t('No contract is registered for this financier in {c}. Finance must register it first.', { c: n.currency })}</span></div>` : ''}
      <div class="tw" style="margin-top:16px"><table class="tbl sm" style="min-width:${fin ? 880 : 640}px"><thead><tr>
       ${fin ? `<th>${t('Operation no.')}</th><th>${t('Instalment')}</th><th>${t('Month')}</th>` : `<th>${t('Reference')}</th>`}
       <th class="num">${t('Due')}</th><th class="num">${t('Paid before')}</th><th class="num">${t('Requested now')}</th>${fin ? `<th class="num">${t('Principal')}${split ? ' *' : ''}</th>` : ''}<th></th></tr></thead>
@@ -352,11 +368,11 @@ function chequePage(id) {
   if (!c) return `<div class="card empty">${t('This cheque is not available to you.')}</div>`;
   const b = B(c.benId), ent = E(c.entityId), fc = (c.appr && c.appr.funcCur) || ent.funcCur;
   const big = c.payAmt != null ? M(c.payAmt, c.payCur) : M(c.amount, c.currency);
-  const head = `<nav class="sm" aria-label="${t('Breadcrumb')}"><a href="#/${can.seeAll() ? 'cheques' : 'mine'}">${can.seeAll() ? t('All cheques') : t('My requests')}</a> <span class="mut">/ <bdi dir="ltr">${c.id}</bdi></span></nav>
+  const head = `<nav class="sm" aria-label="${t('Breadcrumb')}"><a href="#/${has('cheques') ? 'cheques' : 'mine'}">${has('cheques') ? (S.user.scope === 'all' ? t('All cheques') : S.user.scope === 'dept' ? t('Department cheques') : t('Cheques')) : t('My requests')}</a> <span class="mut">/ <bdi dir="ltr">${c.id}</bdi></span></nav>
    <section class="card" style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px;flex-wrap:wrap">
     <div style="min-width:0"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><h1 class="h1" style="font-size:26px"><bdi dir="ltr">${c.id}</bdi></h1>${chip(c.status)}${c.priority === 'Urgent' ? `<span class="chip c-ret">${t('Urgent')}</span>` : ''}</div>
      <div style="font-size:18px;font-weight:600;margin-top:6px">${esc(nm(b))}</div>
-     <div class="mut" style="margin-top:2px">${t(c.opType)} · ${esc(nm(ent))} · ${t('requested by {n} on {d}', { n: esc(U(c.requesterId).fullName), d: fd(c.createdAt) })}</div></div>
+     <div class="mut" style="margin-top:2px">${t(c.opType)} · ${esc(nm(ent))} · ${t('requested by {n} on {d}', { n: esc(UN(c.requesterId)), d: fd(c.createdAt) })}</div></div>
     <div style="text-align:end"><div style="font-size:28px;font-weight:700">${big}</div>
      <div class="mut sm">${c.payAmt != null ? t('Cheque amount') : t('Requested amount')}${c.currency !== (c.payCur || c.currency) || c.payAmt == null ? ' · ' + t('contract amount {a}', { a: money(c.amount, c.currency) }) : ''}</div>
      <button class="btn btn-o btn-sm" style="margin-top:10px" onclick="window.print()">${ic('print')}${t('Print')}</button></div></section>`;
@@ -369,7 +385,7 @@ function chequePage(id) {
     ${pair(t('Entity'), `${esc(nm(ent))} · ${t('functional currency {c}', { c: fc })}`)}${pair(t('Operation type'), t(c.opType))}${pair(t('Purpose'), t(c.purpose))}
     ${pair(t('Relationship to the company'), c.related ? `<span class="chip c-2nd">${t('Related party')}</span>` : t('Not a related party'))}
     ${pair(t('Contract currency / payment currency'), `${c.currency} / ${c.payCur || c.currency}`)}${pair(t('Due date'), FD(c.dueDate))}
-    ${pair(t('Requested by'), `${esc(U(c.requesterId).fullName)} · ${esc(nm(Dp(c.deptId)))}`)}
+    ${pair(t('Requested by'), `${esc(UN(c.requesterId))} · ${esc(nm(Dp(c.deptId)))}`)}
     ${pair(t('Payment'), `${t('Cheque')} · ${c.recipientType === 'Other' ? t('to {n}, with authorisation', { n: esc(c.recipientName || '') }) : t('handed to the beneficiary')} · ${t(c.priority === 'Urgent' ? 'Urgent' : 'Normal')}`)}
     ${c.priorityReason ? pair(t('Why urgent'), esc(c.priorityReason)) : ''}${c.remainDate ? pair(t('Remaining balance due'), FD(c.remainDate)) : ''}${c.poaSettleDate ? pair(t('Payment on account settles'), FD(c.poaSettleDate)) : ''}
     ${c.priorPaid ? pair(t('Paid before the request'), `${FD(c.priorDate)} · ${esc(c.priorMethod || '')} · ${esc(c.priorRef || '')}`) : ''}
@@ -383,10 +399,10 @@ function chequePage(id) {
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:16px">${(c.files || []).map(f => `<a class="file" href="/api/file/${f.id}" target="_blank" rel="noopener">${ic('file')}<span><b>${esc(f.name)}</b> <span class="sm mut">· ${kb(f.size)} · ${t({ doc: 'document', auth: 'authorisation', prior: 'payment proof' }[f.kind] || f.kind)}</span></span></a>`).join('') || `<span class="mut sm">${t('No attachment (request from the first version).')}</span>`}</div></section>
    ${c.issue ? `<section class="card"><h2 class="h3">${t('Cheque')}</h2><div class="pairs">
     ${pair(t('Cheque no.'), `<bdi dir="ltr">${esc(c.issue.no)}</bdi>`)}${pair(t('Account'), esc(AC(c.issue.accountId) ? acctName(AC(c.issue.accountId)) : c.issue.bank))}${pair(t('Cheque date'), FD(c.issue.date))}
-    ${pair(t('Issued by'), `${esc(c.issue.by)} · ${FD(c.issue.at)}`)}${c.delivered ? pair(t('Handed to'), `${esc(c.delivered.to || nm(b))} · ${FD(c.delivered.at)}`) : ''}
-    ${c.closed ? pair(c.closed.status === 'Cleared' ? t('Clearing recorded by') : t('Return recorded by'), `${esc(c.closed.by)} · ${FD(c.closed.at)}`) : ''}
-    ${c.closed && c.closed.reason ? pair(t('Return reason'), esc(c.closed.reason)) : ''}${c.solved ? pair(t('Settled'), `${t(c.solved.method || '')} · ${esc(c.solved.note)} · ${esc(c.solved.by)}`) : ''}
-    ${c.poa ? pair(t('Payment on account settled'), `${esc(c.poa.reference)} · ${esc(c.poa.by)} · ${FD(c.poa.at)}`) : ''}</div></section>` : ''}
+    ${pair(t('Issued by'), `${esc(byN(c.issue.by))} · ${FD(c.issue.at)}`)}${c.delivered ? pair(t('Handed to'), `${esc(c.delivered.to || nm(b))} · ${FD(c.delivered.at)}`) : ''}
+    ${c.closed ? pair(c.closed.status === 'Cleared' ? t('Clearing recorded by') : t('Return recorded by'), `${esc(byN(c.closed.by))} · ${FD(c.closed.at)}`) : ''}
+    ${c.closed && c.closed.reason ? pair(t('Return reason'), esc(c.closed.reason)) : ''}${c.solved ? pair(t('Settled'), `${t(c.solved.method || '')} · ${esc(c.solved.note)} · ${esc(byN(c.solved.by))}`) : ''}
+    ${c.poa ? pair(t('Payment on account settled'), `${esc(c.poa.reference)} · ${esc(byN(c.poa.by))} · ${FD(c.poa.at)}`) : ''}</div></section>` : ''}
    <section class="card"><h2 class="h3" style="margin-bottom:14px">${t('History')}</h2>${chqHistory(c).map(h => `<div class="tl"><div>${h[0]}</div><div class="sm mut">${FD(h[1])}</div></div>`).join('')}</section>`;
   const right = `${ratesCard(c)}${entriesCard(c)}`;
   return `${head}<section class="card" aria-label="${t('Progress')}" style="overflow-x:auto">${stepper(c)}</section>
@@ -396,7 +412,7 @@ function pair(l, v) { return `<div><div class="pl">${l}</div><div class="pv">${v
 
 function stepper(c) {
   if (c.status === 'Rejected' || c.status === 'Cancelled')
-    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${chip(c.status)}<span>${c.rejected ? t('Rejected by {n}: {r}', { n: esc(c.rejected.by), r: esc(c.rejected.reason) }) : t('Cancelled by the requester.')}</span></div>`;
+    return `<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${chip(c.status)}<span>${c.rejected ? t('Rejected by {n}: {r}', { n: esc(byN(c.rejected.by)), r: esc(c.rejected.reason) }) : t('Cancelled by the requester.')}</span></div>`;
   const ret = ['Returned', 'Solved'].includes(c.status);
   // last step that is complete; the one after it is "now"
   const upTo = { Pending: 0, Pending2: 1, Approved: 2, Posted: 3, Received: 4, Delivered: 5, Cleared: 6, Returned: 6, Solved: 6 }[c.status] ?? 0;
@@ -415,17 +431,17 @@ function stepper(c) {
 }
 
 function chqHistory(c) {
-  const h = [[t('Requested by {n}', { n: esc(U(c.requesterId).fullName) }), c.createdAt]];
-  if (c.appr) h.push([t('Approved by {n} · rate of {d} saved and locked', { n: esc(c.appr.by), d: fd(c.appr.rateDate) }), c.appr.at]);
+  const h = [[t('Requested by {n}', { n: esc(UN(c.requesterId)) }), c.createdAt]];
+  if (c.appr) h.push([t('Approved by {n} · rate of {d} saved and locked', { n: esc(byN(c.appr.by)), d: fd(c.appr.rateDate) }), c.appr.at]);
   if (c.appr && !c.need2) h.push([t('Second approval not needed'), c.appr.at]);
-  if (c.appr2) h.push([t('Second approval by {n}', { n: esc(c.appr2.by) }), c.appr2.at]);
-  if (c.rejected) h.push([t('Rejected by {n}: {r}', { n: esc(c.rejected.by), r: esc(c.rejected.reason) }), c.rejected.at]);
-  if (c.issue) h.push([t('Cheque {no} issued to {r} by {n}', { no: esc(c.issue.no), r: esc(U(c.requesterId).fullName), n: esc(c.issue.by) }) + (c.issue.rateId ? ' · ' + t('rate of {d} locked', { d: fd(c.issue.rateDate) }) : ''), c.issue.at]);
-  if (c.received) h.push([t('Receipt confirmed by {n}', { n: esc(c.received.by) }), c.received.at]);
-  if (c.delivered) h.push([t('Handed to {to} by {n}', { to: esc(c.delivered.to || nm(B(c.benId))), n: esc(c.delivered.by) }), c.delivered.at]);
-  if (c.closed) h.push([(c.closed.status === 'Cleared' ? t('Cleared · recorded by {n}', { n: esc(c.closed.by) }) : t('Returned · recorded by {n}', { n: esc(c.closed.by) })) + (c.closed.rateDate ? ' · ' + t('rate of {d} saved', { d: fd(c.closed.rateDate) }) : ''), c.closed.at]);
-  if (c.solved) h.push([t('Returned cheque settled by {n}: {m}', { n: esc(c.solved.by), m: esc(t(c.solved.method || '') + ' · ' + c.solved.note) }), c.solved.at]);
-  if (c.poa) h.push([t('Payment on account settled by {n}', { n: esc(c.poa.by) }), c.poa.at]);
+  if (c.appr2) h.push([t('Second approval by {n}', { n: esc(byN(c.appr2.by)) }), c.appr2.at]);
+  if (c.rejected) h.push([t('Rejected by {n}: {r}', { n: esc(byN(c.rejected.by)), r: esc(c.rejected.reason) }), c.rejected.at]);
+  if (c.issue) h.push([t('Cheque {no} issued to {r} by {n}', { no: esc(c.issue.no), r: esc(UN(c.requesterId)), n: esc(byN(c.issue.by)) }) + (c.issue.rateId ? ' · ' + t('rate of {d} locked', { d: fd(c.issue.rateDate) }) : ''), c.issue.at]);
+  if (c.received) h.push([t('Receipt confirmed by {n}', { n: esc(byN(c.received.by)) }), c.received.at]);
+  if (c.delivered) h.push([t('Handed to {to} by {n}', { to: esc(c.delivered.to || nm(B(c.benId))), n: esc(byN(c.delivered.by)) }), c.delivered.at]);
+  if (c.closed) h.push([(c.closed.status === 'Cleared' ? t('Cleared · recorded by {n}', { n: esc(byN(c.closed.by)) }) : t('Returned · recorded by {n}', { n: esc(byN(c.closed.by)) })) + (c.closed.rateDate ? ' · ' + t('rate of {d} saved', { d: fd(c.closed.rateDate) }) : ''), c.closed.at]);
+  if (c.solved) h.push([t('Returned cheque settled by {n}: {m}', { n: esc(byN(c.solved.by)), m: esc(t(c.solved.method || '') + ' · ' + c.solved.note) }), c.solved.at]);
+  if (c.poa) h.push([t('Payment on account settled by {n}', { n: esc(byN(c.poa.by)) }), c.poa.at]);
   if (c.status === 'Cancelled') h.push([t('Cancelled by the requester'), '']);
   return h;
 }
@@ -435,7 +451,7 @@ function rateBlock(title, badge, sub, r, extra) {
   return `<div class="rate" style="margin-top:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div class="b">${title}</div><span class="chip c-lock">${ic('lock')}${badge}</span></div>
    <div class="sm mut">${sub}</div>
    <div class="big"><bdi dir="ltr">1 USD = ${rnum(r.sdg)} SDG</bdi></div><div class="sm"><bdi dir="ltr">1 USD = ${rnum(r.qar)} QAR</bdi></div>
-   <div class="sm mut" style="margin:6px 0 10px"><bdi dir="ltr">${esc(r.rateId || '')}</bdi> · ${esc(r.src || t('no source'))} · ${t('entered by {n}', { n: esc(r.rateBy || '—') })}</div>${extra}</div>`;
+   <div class="sm mut" style="margin:6px 0 10px"><bdi dir="ltr">${esc(r.rateId || '')}</bdi> · ${esc(r.src || t('no source'))} · ${t('entered by {n}', { n: esc(byN(r.rateBy) || '—') })}</div>${extra}</div>`;
 }
 function ratesCard(c) {
   const fc = (c.appr && c.appr.funcCur) || E(c.entityId).funcCur;
@@ -443,7 +459,7 @@ function ratesCard(c) {
   if (c.appr && c.appr.qar) {
     const fp = c.appr.funcPrincipal != null ? +c.appr.funcPrincipal : 0;
     h += rateBlock(t('At approval'), t('Locked'), t('Rate of {d}, the document date', { d: fd(c.appr.rateDate) }), c.appr,
-      `<div class="sm" style="margin:-4px 0 8px">${t('Approved by {n}', { n: esc(c.appr.by) })} · ${FD(c.appr.at)}</div>
+      `<div class="sm" style="margin:-4px 0 8px">${t('Approved by {n}', { n: esc(byN(c.appr.by)) })} · ${FD(c.appr.at)}</div>
        <div class="line"><span>${t('Recorded value')}</span><span class="b">${M(c.appr.funcVal, fc)}</span></div>
        ${isFin(c) ? `<div class="line"><span>${t('Principal / profit')}</span><span>${N(fp)} / ${N((+c.appr.funcVal) - fp)}</span></div>` : ''}
        <div class="line"><span>${t('USD equivalent')}</span><span>${M(c.appr.usdEq, 'USD')}</span></div>`);
@@ -455,7 +471,7 @@ function ratesCard(c) {
     `<div class="line"><span>${t('Cheque amount')}</span><span class="b">${M(c.payAmt, c.payCur)}</span></div>
      <div class="line"><span>${t('FX difference')}</span>${fxSpan(c.issue.fxDiff, fc)}</div>`);
   if (c.closed && c.closed.rateId) h += rateBlock(c.closed.status === 'Cleared' ? t('At clearing') : t('At return'), t('Saved'), t('Rate of {d}, the day it was recorded', { d: fd(c.closed.rateDate) }), c.closed,
-    `<div class="sm" style="margin:-4px 0 8px">${c.closed.status === 'Cleared' ? t('Cleared by {n}', { n: esc(c.closed.by) }) : t('Returned · recorded by {n}', { n: esc(c.closed.by) })} · ${FD(c.closed.at)}</div>
+    `<div class="sm" style="margin:-4px 0 8px">${c.closed.status === 'Cleared' ? t('Cleared by {n}', { n: esc(byN(c.closed.by)) }) : t('Returned · recorded by {n}', { n: esc(byN(c.closed.by)) })} · ${FD(c.closed.at)}</div>
      <div class="line"><span>${t('USD equivalent')}</span><span>${M(c.closed.usdEq, 'USD')}</span></div>
      ${c.closed.status === 'Cleared' ? `<div class="line"><span>${t('Realised FX difference')}</span>${fxSpan(c.closed.fxDiff, fc)}</div>
      ${(c.payCur || c.currency) === fc ? `<div class="sm mut" style="margin-top:6px">${t('The cheque is in {c}, the entity’s own currency, so clearing adds no difference.', { c: fc })}</div>` : ''}` : ''}`);
@@ -506,13 +522,13 @@ function entryHtml(e, compact) {
   const p = postedOf(e.key);
   return `<div class="entry"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
     <div><span class="b">${t(e.kind)}</span> <span class="sm mut">· ${FD(e.date)}${compact ? '' : ` · <a href="#/cheque/${e.c.id}"><bdi dir="ltr">${e.c.id}</bdi></a> · ${esc(nm(B(e.c.benId)))}`}${e.note ? ' · ' + esc(e.note) : ''}</span></div>
-    ${p ? `<span class="chip c-clr">${t('Posted by {n}', { n: esc(p.by) })} · ${FD(p.at)}${can.fin() ? ` <button class="x" style="padding:0 0 0 6px" aria-label="${t('Undo')}" onclick="act('unpostEntry',{key:'${e.key}'},'${js(t('Unmarked'))}')">${ic('x')}</button>` : ''}</span>`
-      : can.fin() ? `<button class="btn btn-y btn-sm" onclick="act('postEntry',{key:'${e.key}'},'${js(t('Marked as posted'))}')">${t('Mark as posted')}</button>` : `<span class="chip c-open">${t('Not posted')}</span>`}</div>
+    ${p ? `<span class="chip c-clr">${t('Posted by {n}', { n: esc(byN(p.by)) })} · ${FD(p.at)}${has('entries', 'post') ? ` <button class="x" style="padding:0 0 0 6px" aria-label="${t('Undo')}" onclick="act('unpostEntry',{key:'${e.key}'},'${js(t('Unmarked'))}')">${ic('x')}</button>` : ''}</span>`
+      : has('entries', 'post') ? `<button class="btn btn-y btn-sm" onclick="act('postEntry',{key:'${e.key}'},'${js(t('Marked as posted'))}')">${t('Mark as posted')}</button>` : `<span class="chip c-open">${t('Not posted')}</span>`}</div>
    <div class="tw"><table class="tbl sm" style="margin-top:6px"><thead><tr><th>${t('Account')}</th><th class="num">${t('Debit')} ${e.cur}</th><th class="num">${t('Credit')} ${e.cur}</th></tr></thead>
    <tbody>${e.lines.map(l => `<tr><td><bdi dir="ltr">${esc(l[0])}</bdi> ${esc(l[1])}</td><td class="num">${l[2] ? N(l[2], 2) : ''}</td><td class="num">${l[3] ? N(l[3], 2) : ''}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function entriesCard(c) {
-  if (!can.seeAll()) return '';
+  if (!has('entries')) return '';
   const es = entriesOf(c);
   if (c.purpose === 'Guarantee') return `<section class="card"><h2 class="h3">${t('Journal entries')}</h2><div class="sm mut" style="margin-top:6px">${t('Guarantee cheques have no journal entries.')}</div></section>`;
   return `<section class="card"><h2 class="h3">${t('Journal entries')}</h2>${es.length ? es.map(e => entryHtml(e, true)).join('') : `<div class="sm mut" style="margin-top:6px">${t('Entries appear once the cheque is issued.')}</div>`}</section>`;
@@ -532,22 +548,22 @@ function panel(title, body, buttons) {
 function why(msg) { return `<div class="vbox" style="margin-top:10px">${ic('info')}<span>${msg}</span></div>`; }
 function actionPanel(c) {
   let poa = '';
-  if (isPoa(c) && !c.poa && ['Posted', 'Received', 'Delivered', 'Cleared'].includes(c.status) && R() === 'FIN')
+  if (isPoa(c) && !c.poa && ['Posted', 'Received', 'Delivered', 'Cleared'].includes(c.status) && has('poa', 'settle'))
     poa = panel(t('Settle the payment on account'), `<div class="sm mut" style="margin-top:2px">${t('Due to settle on {d}.', { d: fd(c.poaSettleDate) })}</div><div class="fg" style="margin-top:12px"><label class="lbl" for="p_rf">${t('Invoice or document that settles it')} <span class="req">*</span></label><input class="in" id="p_rf"></div>`,
       `<button class="btn btn-y" onclick="act('settlePoa',{id:'${c.id}',reference:val('p_rf')},'${js(t('Payment on account settled'))}')">${t('Mark as settled')}</button>`);
   return mainPanel(c) + poa;
 }
 function mainPanel(c) {
-  const me = S.user.id, r = R(), mineC = c.requesterId === me, fc = E(c.entityId).funcCur;
+  const me = S.user.id, mineC = c.requesterId === me, fc = E(c.entityId).funcCur;
   if (c.status === 'Pending') {
-    if (r === 'CFO') {
+    if (can.approve()) {
       if (mineC) return panel(t('CFO approval'), why(t('You raised this request, so you cannot approve it. Another CFO must approve it.')));
       const rt = rateOn(c.docDate || c.createdAt.slice(0, 10));
       if (!rt) return panel(t('CFO approval'), `<div class="warnbox" style="margin-top:10px">${ic('alert')}<span>${t('There is no exchange rate on or before the document date ({d}). Finance must enter it first.', { d: fd(c.docDate) })}</span></div>`);
       const usd = conv(c.amount, c.currency, 'USD', rt), fv = conv(c.amount, c.currency, fc, rt), need = need2Reasons(usd, c.related, c.priorPaid);
       return panel(t('CFO approval'), `<div class="rate" style="margin-top:12px"><div style="display:flex;justify-content:space-between;gap:10px"><div class="b">${t('Rate to lock and save with this cheque')}</div><span class="chip c-lock">${ic('lock')}${t('On approval')}</span></div>
          <div class="sm mut">${t('Rate of {d}, the document date', { d: fd(rt.date) })}</div><div class="big"><bdi dir="ltr">1 USD = ${rnum(rt.SDG)} SDG</bdi></div><div class="sm"><bdi dir="ltr">1 USD = ${rnum(rt.QAR)} QAR</bdi></div>
-         <div class="sm mut" style="margin:6px 0 10px">${esc(rt.id)} · ${esc(rt.source || '—')} · ${t('entered by {n}', { n: esc(rt.setBy) })}</div>
+         <div class="sm mut" style="margin:6px 0 10px">${esc(rt.id)} · ${esc(rt.source || '—')} · ${t('entered by {n}', { n: esc(byN(rt.setBy)) })}</div>
          <div class="line"><span>${t('USD equivalent')}</span><span class="b">${M(round(usd, 'USD'), 'USD')}</span></div><div class="line"><span>${t('Value in {c}', { c: fc })}</span><span class="b">${M(round(fv, fc), fc)}</span></div></div>
         ${need.length ? `<div class="vbox" style="margin-top:12px">${ic('info')}<span>${t('Needs second approval ({w}). After you approve, it goes to Top Management.', { w: esc(need.join(', ')) })}</span></div>` : ''}
         <div class="fg" style="margin-top:14px"><label class="lbl" for="a_rs">${t('Rejection reason')} <span class="mut" style="font-weight:400">(${t('required to reject')})</span></label><input class="in" id="a_rs"></div>`,
@@ -557,7 +573,7 @@ function mainPanel(c) {
     return panel(t('Waiting for the CFO'), why(t('Only the CFO gives the first approval.')));
   }
   if (c.status === 'Pending2') {
-    if (r === 'TOP') {
+    if (can.approve2()) {
       if (mineC) return panel(t('Second approval'), why(t('You raised this request, so you cannot give its second approval.')));
       if (c.appr && c.appr.byId === me) return panel(t('Second approval'), why(t('You gave the first approval, so you cannot give the second one.')));
       const need = need2Reasons(+c.appr.usdEq, c.related, c.priorPaid);
@@ -568,7 +584,7 @@ function mainPanel(c) {
     return panel(t('Waiting for second approval'), why(t('Top Management gives the second approval.')));
   }
   if (c.status === 'Approved') {
-    if (r !== 'FIN') return panel(t('Waiting to be issued'), why(t('Finance issues the cheque.')));
+    if (!can.issue()) return panel(t('Waiting to be issued'), why(t('Finance issues the cheque.')));
     if (mineC) return panel(t('Issue cheque'), why(t('You raised this request, so another Finance member must issue its cheque.')));
     const p = c.payCur || c.currency;
     const accts = D.accounts.filter(a => a.active && a.entityId === c.entityId && a.currency === p);
@@ -581,20 +597,20 @@ function mainPanel(c) {
       else { const pa = round(conv(c.amount, c.currency, p, rt), p), carry = round(conv(pa, p, fc, rt), fc), diff = round(carry - (+c.appr.funcVal || 0), fc);
         amt = `<div class="rate"><div class="sm mut">${t('Issue-day rate {d}: 1 USD = {r} {c}', { d: fd(rt.date), r: rnum(perUsd(p === 'USD' ? c.currency : p, rt)), c: p === 'USD' ? c.currency : p })}</div><div class="line"><span>${t('Cheque amount')}</span><span class="b">${M(pa, p)}</span></div><div class="line"><span>${t('FX difference')}</span>${fxSpan(diff, fc)}</div></div>`; }
     } else amt = `<div class="line"><span>${t('Cheque amount')}</span><span class="b">${M(c.amount, p)}</span></div>`;
-    return panel(t('Issue cheque'), `<div class="sm mut" style="margin-top:2px">${t('Write the cheque, then issue it to {n}.', { n: esc(U(c.requesterId).fullName) })}</div>
+    return panel(t('Issue cheque'), `<div class="sm mut" style="margin-top:2px">${t('Write the cheque, then issue it to {n}.', { n: esc(UN(c.requesterId)) })}</div>
       <div class="fgrid"><div class="fg"><label class="lbl" for="i_acc">${t('Account')} <span class="req">*</span></label><select class="in" id="i_acc" onchange="S.issAcc=+this.value;render()">${accts.map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(acctName(a))}${a.description ? ' · ' + esc(a.description) : ''}</option>`).join('')}</select></div>
        <div class="fg"><label class="lbl" for="i_no">${t('Cheque number')} <span class="req">*</span></label><input class="in" id="i_no" value="${nf || ''}" inputmode="numeric" dir="ltr"><div class="hint">${nf ? t('Next free number: {n}', { n: nf }) : t('No free number: the CFO must add a chequebook.')}</div></div>
        <div class="fg"><label class="lbl" for="i_dt">${t('Cheque date')} <span class="req">*</span></label>${dateIn('i_dt', c.dueDate)}</div></div>
       <div style="margin-top:14px">${amt}</div>`, `<button class="btn btn-y" onclick="issueChq('${c.id}')">${t('Issue cheque')}</button>`);
   }
   if (c.status === 'Posted') {
-    if (mineC) return panel(t('Confirm receipt'), `<div class="okbox" style="margin-top:10px">${ic('check')}<span>${t('{n} issued this cheque to you. Confirm when you have it in hand.', { n: esc(c.issue.by) })}</span></div>`, `<button class="btn btn-y" onclick="act('receive',{id:'${c.id}'},'${js(t('Receipt confirmed'))}')">${t('I received the cheque')}</button>`);
-    return panel(t('With the requester'), why(t('Waiting for {n} to confirm receipt.', { n: esc(U(c.requesterId).fullName) })));
+    if (mineC) return panel(t('Confirm receipt'), `<div class="okbox" style="margin-top:10px">${ic('check')}<span>${t('{n} issued this cheque to you. Confirm when you have it in hand.', { n: esc(byN(c.issue.by)) })}</span></div>`, `<button class="btn btn-y" onclick="act('receive',{id:'${c.id}'},'${js(t('Receipt confirmed'))}')">${t('I received the cheque')}</button>`);
+    return panel(t('With the requester'), why(t('Waiting for {n} to confirm receipt.', { n: esc(UN(c.requesterId)) })));
   }
   if (c.status === 'Received') {
     if (mineC) return panel(t('Hand it to the beneficiary'), `<div class="fgrid"><div class="fg"><label class="lbl" for="d_to">${t('Handed to (person)')}</label><input class="in" id="d_to" value="${esc(B(c.benId).contact || '')}"></div><div class="fg"><label class="lbl" for="d_dt">${t('Date')}</label>${dateIn('d_dt', today())}</div></div>`,
       `<button class="btn btn-y" onclick="act('deliver',{id:'${c.id}',to:val('d_to'),date:dval('d_dt')},'${js(t('Delivery confirmed'))}')">${t('Confirm delivery to the beneficiary')}</button>`);
-    return panel(t('With the requester'), why(t('Waiting for {n} to hand it to the beneficiary.', { n: esc(U(c.requesterId).fullName) })));
+    return panel(t('With the requester'), why(t('Waiting for {n} to hand it to the beneficiary.', { n: esc(UN(c.requesterId)) })));
   }
   if (c.status === 'Delivered') {
     if (!can.clear()) return panel(t('With the beneficiary'), why(t('Finance or the CFO record clearing or return from the due date.')));
@@ -606,7 +622,7 @@ function mainPanel(c) {
       `<button class="btn btn-r" onclick="act('close',{id:'${c.id}',status:'Returned',reason:val('c_rs')},'${js(t('Marked as returned'))}')">${t('Returned')}</button><button class="btn btn-g" onclick="act('close',{id:'${c.id}',status:'Cleared'},'${js(t('Marked as cleared'))}')">${t('Cleared')}</button>`);
   }
   if (c.status === 'Returned') {
-    if (!can.clear()) return panel(t('Returned'), why(t('Finance or the CFO settle returned cheques.')));
+    if (!can.settle()) return panel(t('Returned'), why(t('Finance or the CFO settle returned cheques.')));
     return panel(t('Settle the returned cheque'), `<div class="fgrid"><div class="fg"><label class="lbl" for="s_m">${t('How was it settled?')} <span class="req">*</span></label><select class="in" id="s_m">${['Replacement cheque', 'Transfer', 'Obligation cancelled'].map(m => `<option value="${m}">${t(m)}</option>`).join('')}</select></div>
       <div class="fg"><label class="lbl" for="s_n">${t('Note')} <span class="req">*</span></label><input class="in" id="s_n" placeholder="${t('e.g. new cheque or transfer reference')}"></div></div>`,
       `<button class="btn btn-g" onclick="act('solve',{id:'${c.id}',method:val('s_m'),note:val('s_n')},'${js(t('Returned cheque settled'))}')">${t('Mark as settled')}</button>`);

@@ -3,7 +3,7 @@
    ========================================================= */
 'use strict';
 const BENTYPES = ['Supplier', 'Financier', 'Customer', 'Employee', 'Other'];
-const kpi = (l, v, d) => `<div class="kpi"><div class="l">${l}</div><div class="v">${v}</div>${d ? `<div class="d">${d}</div>` : ''}</div>`;
+const kpi = (l, v, d) => `<div class="kpi"><div class="l">${l}</div><div class="v${String(v).replace(/<[^>]*>/g, '').length > 11 ? ' lg' : ''}">${v}</div>${d ? `<div class="d">${d}</div>` : ''}</div>`;
 const phead = (title, sub, btn) => `<div class="phead"><div><h1 class="h1">${title}</h1>${sub ? `<div class="sub2">${sub}</div>` : ''}</div>${btn || ''}</div>`;
 const yes = v => v ? `<span class="chip c-clr">${t('Yes')}</span>` : `<span class="chip c-can">${t('No')}</span>`;
 const activeChip = v => v ? `<span class="chip c-clr">${t('Active')}</span>` : `<span class="chip c-can">${t('Inactive')}</span>`;
@@ -21,7 +21,7 @@ function tbl(head, rows, empty, cls) {
 
 /* =================== EXCHANGE RATES =================== */
 function ratesPage() {
-  const L = D.rates, fin = can.fin(), e = S.rEdit || {};
+  const e = S.rEdit || {}, canFix = has('rates', 'edit'), L = D.rates, fin = has('rates', 'create') || (canFix && !!e.id);
   const r0 = L[0], m30 = rateOn(addDays(today(), -30));
   const pct = (a, b) => b ? ((a - b) / b * 100) : 0;
   const ch30 = r0 && m30 && m30 !== r0 ? pct(+r0.SDG, +m30.SDG) : null;
@@ -38,8 +38,8 @@ function ratesPage() {
     const prev = L[p.st + i + 1], d = prev ? pct(+r.SDG, +prev.SDG) : 0;
     return [FD(r.date), `<bdi dir="ltr">${rnum(r.QAR)}</bdi>`, `<bdi dir="ltr">${rnum(r.SDG)}</bdi>`,
       prev ? `<span class="${Math.abs(d) > +D.settings.rateAlertPct ? 'late' : 'mut'}"><bdi dir="ltr">${d > 0 ? '+' : ''}${d.toFixed(2)}%</bdi></span>` : '—',
-      esc(r.source || '—'), `${esc(r.setBy)}<div class="sm mut">${FD(r.setAt)}</div>`,
-      r.locked ? `<span class="chip c-lock">${ic('lock')}${t('Locked')}</span>` : fin ? `<button class="btn btn-o btn-sm" onclick="S.rEdit=D.rates.find(x=>x.id==='${r.id}');render();scrollTo(0,0)">${ic('edit')}${t('Correct')}</button>` : `<span class="chip c-open">${t('Not used yet')}</span>`];
+      esc(r.source || '—'), `${esc(byN(r.setBy))}<div class="sm mut">${FD(r.setAt)}</div>`,
+      r.locked ? `<span class="chip c-lock">${ic('lock')}${t('Locked')}</span>` : canFix ? `<button class="btn btn-o btn-sm" onclick="S.rEdit=D.rates.find(x=>x.id==='${r.id}');render();scrollTo(0,0)">${ic('edit')}${t('Correct')}</button>` : `<span class="chip c-open">${t('Not used yet')}</span>`];
   });
   return phead(t('Exchange rates'), t('Rates per 1 USD. Each cheque keeps the rate of its approval, issue and clearing.')) +
     `<div class="kpis">${kpi(t('Latest SDG rate'), r0 ? `<bdi dir="ltr">${rnum(r0.SDG)}</bdi>` : '—', r0 ? FD(r0.date) : '')}
@@ -64,58 +64,147 @@ function kStats(k) {
   cs.forEach(c => c.lines.filter(l => l.opNo === k.opNo).forEach(l => { used += +l.principal || 0; if (c.status === 'Cleared') paid += +l.principal || 0; }));
   return { used, paid, remaining: +k.principal - used, cheques: cs };
 }
+const KCLOSE = ['Fully settled', 'Not renewed', 'Cancelled', 'Other'];
+function addMonths(iso, n) {
+  const d = new Date((iso || today()) + 'T12:00:00Z'), day = d.getUTCDate();
+  d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + n);
+  d.setUTCDate(Math.min(day, new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()));
+  return d.toISOString().slice(0, 10);
+}
+/** The owner may always follow up a contract; others need the "Follow up" right. */
+function kCanFollow(k) { return has('contracts', 'follow') || (k.ownerId && k.ownerId === S.user.id); }
+function kDone(j, title) { closeM(); if (j && j.alert) S.after = () => confirmBox(title, `<div class="vbox">${esc(tErr(j.alert))}</div>`, t('OK'), null); }
 function contractsPage() {
-  if (!can.seeAll()) return denied();
-  const fin = can.fin(), L = D.contracts, f = F('k');
-  const q = f.q.trim().toLowerCase();
-  const rows = L.filter(k => !q || (k.opNo + ' ' + nm(B(k.financierId)) + ' ' + B(k.financierId).nameEn).toLowerCase().includes(q)).filter(k => !f.ent || String(k.entityId) === f.ent);
-  const st = new Map(L.map(k => [k.id, kStats(k)]));
-  const totP = L.reduce((a, k) => a + usdNow(k.principal, k.currency), 0), totR = L.reduce((a, k) => a + usdNow(st.get(k.id).remaining, k.currency), 0);
-  const ending = L.filter(k => daysUntil(k.endDate) >= 0 && daysUntil(k.endDate) <= 90 && st.get(k.id).remaining > 0).length;
-  const prog = L.slice().sort((a, b) => usdNow(b.principal, b.currency) - usdNow(a.principal, a.currency)).slice(0, 8).map(k => { const s = st.get(k.id); return { label: `${k.opNo} · ${nm(B(k.financierId))}`, value: s.used, total: +k.principal, sub: `${money(s.used, k.currency)} / ${money(k.principal, k.currency)}`, tip: `${k.opNo}\n${t('Requested')}: ${money(s.used, k.currency)}\n${t('Cleared')}: ${money(s.paid, k.currency)}\n${t('Remaining')}: ${money(s.remaining, k.currency)}` }; });
-  const byFin = {}; L.forEach(k => { const n = nm(B(k.financierId)); byFin[n] = (byFin[n] || 0) + usdNow(st.get(k.id).remaining, k.currency); });
-  const trs = rows.map(k => { const s = st.get(k.id);
-    return [`<b>${esc(k.opNo)}</b><div class="sm mut">${esc(nm(B(k.financierId)))}</div>`, esc(nm(E(k.entityId))), M(k.principal, k.currency), M(k.profit, k.currency), M(s.used, k.currency),
-      `<span class="${s.remaining <= 0 ? 'mut' : 'b'}">${M(s.remaining, k.currency)}</span>`, `${k.termMonths} ${t('months')} · ${k.instalments} ${t('instalments')}`,
-      `${FD(k.startDate)} – ${FD(k.endDate)}${daysUntil(k.endDate) < 0 ? `<div class="sm late">${t('Ended')}</div>` : ''}`,
-      `<div style="display:flex;gap:6px;flex-wrap:wrap">${fin ? `<button class="btn btn-o btn-sm" onclick="contractModal(${k.id})">${t('Edit')}</button><button class="btn btn-o btn-sm" onclick="extendModal(${k.id})">${t('Extend')}</button>` : ''}<button class="btn btn-o btn-sm" onclick="logModal(${k.id})">${t('History')}</button></div>`]; });
-  return phead(t('Contracts register'), t('Financing operations. Requests for instalments must match a contract here.'), fin ? `<button class="btn btn-y" onclick="contractModal(0)">${ic('plus')}${t('Register contract')}</button>` : '') +
-    `<div class="kpis">${kpi(t('Contracts'), N(L.length))}${kpi(t('Total principal (USD)'), M(totP, 'USD'), t('at the latest rate'))}${kpi(t('Remaining principal (USD)'), M(totR, 'USD'), t('not yet requested'))}${kpi(t('Ending in 90 days'), N(ending), t('with principal remaining'))}</div>
-    ${L.length ? `<div class="charts"><section class="card"><h2 class="h3">${t('Principal requested so far')}</h2><div class="sm mut" style="margin:2px 0 6px">${t('Largest contracts · requested against total principal')}</div>${progRows(prog)}</section>
+  if (!has('contracts')) return denied();
+  const L = D.contracts, f = F('k', { tab: 'all' }), q = f.q.trim().toLowerCase();
+  const st = new Map(L.map(k => [k.id, kStats(k)])), ks = new Map(L.map(k => [k.id, kState(k)]));
+  const open = L.filter(k => !ks.get(k.id).closed);
+  const tabs = [
+    { k: 'all', label: t('Active'), f: k => !ks.get(k.id).closed },
+    { k: 'att', label: t('Needs follow-up'), f: k => ks.get(k.id).attention },
+    { k: 'soon', label: t('Expiring soon'), f: k => ks.get(k.id).soon },
+    { k: 'exp', label: t('Expired'), f: k => ks.get(k.id).expired },
+    { k: 'closed', label: t('Closed'), f: k => ks.get(k.id).closed }];
+  const tab = tabs.find(x => x.k === f.tab) || tabs[0];
+  const rows = L.filter(tab.f).filter(k => !q || (k.opNo + ' ' + nm(B(k.financierId)) + ' ' + B(k.financierId).nameEn).toLowerCase().includes(q))
+    .filter(k => !f.ent || String(k.entityId) === f.ent).sort((a, b) => kExp(a) < kExp(b) ? -1 : 1);
+  const totR = open.reduce((a, k) => a + usdNow(st.get(k.id).remaining, k.currency), 0);
+  const nSoon = L.filter(k => ks.get(k.id).soon).length, nExp = L.filter(k => ks.get(k.id).expired).length;
+  const prog = open.slice().sort((a, b) => usdNow(b.principal, b.currency) - usdNow(a.principal, a.currency)).slice(0, 8).map(k => { const s = st.get(k.id); return { label: `${k.opNo} · ${nm(B(k.financierId))}`, value: s.used, total: +k.principal, sub: `<bdi dir="ltr">${money(s.used, k.currency)} / ${money(k.principal, k.currency)}</bdi>`, tip: `${k.opNo}\n${t('Requested')}: ${money(s.used, k.currency)}\n${t('Cleared')}: ${money(s.paid, k.currency)}\n${t('Remaining')}: ${money(s.remaining, k.currency)}` }; });
+  const byFin = {}; open.forEach(k => { const n = nm(B(k.financierId)); byFin[n] = (byFin[n] || 0) + usdNow(st.get(k.id).remaining, k.currency); });
+  const trs = rows.map(k => { const s = st.get(k.id), x = ks.get(k.id);
+    return [`<a class="lnk" href="javascript:void(0)" onclick="kModal(${k.id})"><b><bdi dir="ltr" style="white-space:nowrap">${esc(k.opNo)}</bdi></b></a><div class="sm mut">${esc(nm(B(k.financierId)))}</div>`, esc(nm(E(k.entityId))),
+      M(k.principal, k.currency), `<span class="${s.remaining <= 0 ? 'mut' : 'b'}">${M(s.remaining, k.currency)}</span>`,
+      `${FD(kExp(k))}<div style="margin-top:4px">${kChip(k)}</div>`,
+      `${k.ownerId ? esc(UN(k.ownerId)) : `<span class="mut">${t('Not assigned')}</span>`}${k.followUpDate ? `<div class="sm ${x.due ? 'late' : 'mut'}">${t('next follow-up {d}', { d: fd(k.followUpDate) })}</div>` : ''}`,
+      `<div style="display:flex;gap:6px;flex-wrap:wrap">${!x.closed && kCanFollow(k) ? `<button class="btn btn-y btn-sm" onclick="kFollowModal(${k.id})">${t('Follow up')}</button>` : ''}<button class="btn btn-o btn-sm" onclick="kModal(${k.id})">${t('Details')}</button></div>`]; });
+  return phead(t('Contracts register'), t('Financing operations, their expiry and follow-up. Requests for instalments must match a contract here.'), has('contracts', 'create') ? `<button class="btn btn-y" onclick="contractModal(0)">${ic('plus')}${t('Register contract')}</button>` : '') +
+    `<div class="kpis">${kpi(t('Active contracts'), N(open.length))}${kpi(t('Remaining principal (USD)'), M(totR, 'USD'), t('not yet requested'))}${kpi(t('Expiring soon'), `<span class="${nSoon ? 'soon' : ''}">${N(nSoon)}</span>`, t('within their reminder period'))}${kpi(t('Expired, not closed'), `<span class="${nExp ? 'late' : ''}">${N(nExp)}</span>`, t('renew or close them'))}</div>
+    ${open.length ? `<div class="charts"><section class="card"><h2 class="h3">${t('Principal requested so far')}</h2><div class="sm mut" style="margin:2px 0 6px">${t('Largest contracts · requested against total principal')}</div>${progRows(prog)}</section>
      <section class="card"><h2 class="h3">${t('Remaining principal by financier')}</h2><div class="sm mut" style="margin:2px 0 10px">${t('USD at the latest rate')}</div>${hbar(Object.entries(byFin).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, title: t('Remaining principal by financier') })}</section></div>` : ''}
+    <div class="tabs" role="tablist">${tabs.map(x => `<button type="button" role="tab" aria-selected="${x === tab}" class="tab ${x === tab ? 'on' : ''}" onclick="setF('k','tab','${x.k}')">${esc(x.label)} <b>${L.filter(x.f).length}</b></button>`).join('')}</div>
     <div class="card flat"><div class="fbar">${searchBox('k', t('Operation no. or financier'))}<select class="in" onchange="setF('k','ent',this.value)"><option value="">${t('All entities')}</option>${D.entities.map(e => `<option value="${e.id}" ${String(e.id) === f.ent ? 'selected' : ''}>${esc(nm(e))}</option>`).join('')}</select></div>
-     ${tbl([t('Operation'), t('Entity'), { l: t('Principal'), n: 1 }, { l: t('Profit'), n: 1 }, { l: t('Requested'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Term'), t('Period'), ''], trs, t('No contracts registered yet.'), 'cards')}</div>`;
+     ${tbl([t('Operation'), t('Entity'), { l: t('Principal'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Expiry'), t('Follow-up'), ''], trs, tab.k === 'all' ? t('No contracts registered yet.') : t('Nothing here.'), 'cards')}</div>`;
 }
 function contractModal(id) {
-  const k = D.contracts.find(x => x.id === id) || { currency: 'USD', entityId: (D.entities[0] || {}).id, startDate: today() };
+  const k = D.contracts.find(x => x.id === id) || { currency: 'USD', entityId: (D.entities[0] || {}).id, startDate: today(), noticeDays: 30 };
   const fins = D.beneficiaries.filter(b => b.type === 'Financier');
+  const followers = D.users.filter(u => u.active && (u.id === k.ownerId || (RK(u.role) && (RK(u.role).perms.contracts || []).length)));
+  const auto = !id || !k.expiryDate || k.expiryDate === k.endDate;
   modal(`${mhead(id ? t('Edit contract {o}', { o: k.opNo }) : t('Register contract'))}<div class="mb">
    ${fins.length ? '' : `<div class="warnbox">${ic('alert')}<span>${t('Add the financier first as a beneficiary of type Financier.')}</span></div>`}
    <div class="fgrid" style="margin-top:0">${fld('k_op', t('Operation no.'), inp('k_op', k.opNo, 'dir="ltr"'), 1)}
     ${fld('k_fin', t('Financier'), sel('k_fin', [[0, t('Choose')], ...fins.map(b => [b.id, nm(b)])], k.financierId), 1)}
     ${fld('k_ent', t('Entity'), sel('k_ent', D.entities.map(e => [e.id, nm(e)]), k.entityId), 1)}${fld('k_cur', t('Currency'), sel('k_cur', CURS, k.currency), 1)}
     ${fld('k_pr', t('Principal'), inp('k_pr', k.principal, 'inputmode="decimal" dir="ltr"'), 1)}${fld('k_pf', t('Profit'), inp('k_pf', k.profit, 'inputmode="decimal" dir="ltr"'), 1)}
-    ${fld('k_tm', t('Term (months)'), inp('k_tm', k.termMonths, 'inputmode="numeric" dir="ltr"'), 1)}${fld('k_in', t('Number of instalments'), inp('k_in', k.instalments, 'inputmode="numeric" dir="ltr"'), 1)}
-    ${fld('k_sd', t('Start date'), dateIn('k_sd', k.startDate), 1)}${fld('k_nt', t('Notes'), inp('k_nt', k.notes), 0, 'full')}</div></div>
-   ${mfoot(`<button class="btn btn-y" onclick="act('saveContract',{id:${id},opNo:val('k_op'),financierId:val('k_fin'),entityId:val('k_ent'),currency:val('k_cur'),principal:val('k_pr'),profit:val('k_pf'),termMonths:val('k_tm'),instalments:val('k_in'),startDate:dval('k_sd'),notes:val('k_nt')},'${js(t('Contract saved'))}',{after:closeM})">${t('Save')}</button>`)}`, true);
+    ${fld('k_tm', t('Term (months)'), inp('k_tm', k.termMonths, 'inputmode="numeric" dir="ltr" oninput="kAutoExp()"'), 1)}${fld('k_in', t('Number of instalments'), inp('k_in', k.instalments, 'inputmode="numeric" dir="ltr"'), 1)}
+    ${fld('k_sd', t('Start date'), dateIn('k_sd', k.startDate, 'onchange="kAutoExp()"'), 1)}
+    ${fld('k_ex', t('Expiry date'), dateIn('k_ex', k.expiryDate || k.endDate || '', `data-auto="${auto ? 1 : 0}" oninput="this.dataset.auto='0'" onchange="if(event.isTrusted===false)this.dataset.auto='0'"`), 1)}
+    ${fld('k_nd', t('Start following up (days before expiry)'), inp('k_nd', k.noticeDays || 30, 'inputmode="numeric" dir="ltr"'), 1)}
+    ${fld('k_ow', t('Follow-up by'), sel('k_ow', [[0, t('Not assigned')], ...followers.map(u => [u.id, un(u)])], k.ownerId || 0))}
+    ${fld('k_nt', t('Notes'), inp('k_nt', k.notes), 0, 'full')}</div>
+   <div class="hint">${t('The expiry date follows the term until you change it. The follow-up starts in "Waiting for you" and the daily digest that many days before.')}</div></div>
+   ${mfoot(`<button class="btn btn-y" onclick="act('saveContract',{id:${id},opNo:val('k_op'),financierId:val('k_fin'),entityId:val('k_ent'),currency:val('k_cur'),principal:val('k_pr'),profit:val('k_pf'),termMonths:val('k_tm'),instalments:val('k_in'),startDate:dval('k_sd'),expiryDate:dval('k_ex'),noticeDays:val('k_nd'),ownerId:val('k_ow'),notes:val('k_nt')},'${js(t('Contract saved'))}',{after:closeM})">${t('Save')}</button>`)}`, true);
+}
+/** While the expiry date follows the term, keep it at start date + term. */
+function kAutoExp() {
+  const ex = document.getElementById('k_ex'); if (!ex || ex.dataset.auto !== '1') return;
+  const sd = dval('k_sd'), tm = parseInt(val('k_tm'), 10);
+  if (sd && tm > 0) ex.value = fd(addMonths(sd, tm));
 }
 function extendModal(id) {
   const k = D.contracts.find(x => x.id === id);
   modal(`${mhead(t('Extend contract {o}', { o: k.opNo }), t('Ends on {d}', { d: fd(k.endDate) }))}<div class="mb"><div class="fgrid" style="margin-top:0">
-   ${fld('x_m', t('Add months'), inp('x_m', '', 'inputmode="numeric" dir="ltr"'), 1)}${fld('x_i', t('New number of instalments (optional)'), inp('x_i', '', 'inputmode="numeric" dir="ltr"'))}${fld('x_n', t('Note'), inp('x_n', '', `placeholder="${t('e.g. rescheduling letter ref.')}"`), 1, 'full')}</div></div>
-   ${mfoot(`<button class="btn btn-y" onclick="act('extendContract',{id:${id},months:val('x_m'),instalments:val('x_i'),note:val('x_n')},'${js(t('Contract extended'))}',{after:j=>{closeM();S.after=()=>confirmBox(t('Contract extended'),'<div class=&quot;vbox&quot;>'+esc(tErr(j.alert||''))+'</div>',t('OK'),null)}})">${t('Extend')}</button>`)}`);
+   ${fld('x_m', t('Add months'), inp('x_m', '', 'inputmode="numeric" dir="ltr"'), 1)}${fld('x_i', t('New number of instalments (optional)'), inp('x_i', '', 'inputmode="numeric" dir="ltr"'))}${fld('x_n', t('Note'), inp('x_n', '', `placeholder="${t('e.g. rescheduling letter ref.')}"`), 1, 'full')}</div>
+   <div class="hint">${t('The term and the instalment schedule change. If the expiry date is earlier than the new end, it moves to the new end.')}</div></div>
+   ${mfoot(`<button class="btn btn-y" onclick="act('extendContract',{id:${id},months:val('x_m'),instalments:val('x_i'),note:val('x_n')},'${js(t('Contract extended'))}',{after:j=>kDone(j,'${js(t('Contract extended'))}')})">${t('Extend')}</button>`)}`);
 }
-function logModal(id) {
-  const k = D.contracts.find(x => x.id === id); let log = []; try { log = JSON.parse(k.log || '[]'); } catch (e) { }
-  const s = kStats(k);
-  modal(`${mhead(t('Contract {o}', { o: k.opNo }), esc(nm(B(k.financierId))))}<div class="mb">
-   <h3 class="h3" style="margin-bottom:12px">${t('History')}</h3>${log.slice().reverse().map(x => `<div class="tl"><div>${esc(x.text)} · <span class="mut">${esc(x.by)}</span></div><div class="sm mut">${FD(x.at)}</div></div>`).join('') || `<div class="mut">${t('No history.')}</div>`}
+function kFollowModal(id) {
+  const k = D.contracts.find(x => x.id === id);
+  modal(`${mhead(t('Follow up contract {o}', { o: k.opNo }), `${esc(nm(B(k.financierId)))} · ${t('Expiry')} ${fd(kExp(k))}`)}<div class="mb">
+   <div style="margin-bottom:12px">${kChip(k)}</div>
+   <div class="fgrid" style="margin-top:0">${fld('kf_n', t('What was done or agreed'), `<textarea class="in" id="kf_n" rows="3" placeholder="${t('e.g. asked the bank for the renewal letter')}"></textarea>`, 1, 'full')}
+    ${fld('kf_d', t('Next follow-up (optional)'), dateIn('kf_d', ''))}</div>
+   <div class="hint">${t('On that date it comes back in "Waiting for you". Leave it empty when nothing more is needed.')}</div></div>
+   ${mfoot(`<button class="btn btn-y" onclick="act('followContract',{id:${id},note:val('kf_n'),nextDate:dval('kf_d')},'${js(t('Follow-up saved'))}',{after:closeM})">${t('Save')}</button>`)}`);
+}
+function kRenewModal(id) {
+  const k = D.contracts.find(x => x.id === id), cur = kExp(k);
+  modal(`${mhead(t('Renew contract {o}', { o: k.opNo }), t('Expires on {d}', { d: fd(cur) }))}<div class="mb"><div class="fgrid" style="margin-top:0">
+   ${fld('kr_d', t('New expiry date'), dateIn('kr_d', addMonths(cur, 12)), 1)}${fld('kr_n', t('Note'), inp('kr_n', '', `placeholder="${t('e.g. renewal letter ref.')}"`), 1, 'full')}</div>
+   <div class="hint">${t('Only the expiry date changes. To change the term or the instalments, use Extend.')}</div></div>
+   ${mfoot(`<button class="btn btn-y" onclick="act('renewContract',{id:${id},expiryDate:dval('kr_d'),note:val('kr_n')},'${js(t('Contract renewed'))}',{after:j=>kDone(j,'${js(t('Contract renewed'))}')})">${t('Renew')}</button>`)}`);
+}
+function kCloseModal(id) {
+  const k = D.contracts.find(x => x.id === id);
+  modal(`${mhead(t('Close contract {o}', { o: k.opNo }), esc(nm(B(k.financierId))))}<div class="mb"><div class="fgrid" style="margin-top:0">
+   ${fld('kc_r', t('Reason'), sel('kc_r', KCLOSE.map(x => [x, t(x)]), 'Fully settled'), 1)}${fld('kc_n', t('Note'), inp('kc_n', ''), 0, 'full')}</div>
+   <div class="hint">${t('A closed contract takes no new instalment requests and drops out of the follow-up. You can reopen it.')}</div></div>
+   ${mfoot(`<button class="btn btn-r" onclick="act('closeContract',{id:${id},reason:val('kc_r'),note:val('kc_n')},'${js(t('Contract closed'))}',{after:j=>kDone(j,'${js(t('Contract closed'))}')})">${t('Close contract')}</button>`)}`);
+}
+function kReopenModal(id) {
+  const k = D.contracts.find(x => x.id === id);
+  modal(`${mhead(t('Reopen contract {o}', { o: k.opNo }))}<div class="mb"><div class="fgrid" style="margin-top:0">${fld('ko_n', t('Why is it reopened?'), inp('ko_n', ''), 1, 'full')}</div></div>
+   ${mfoot(`<button class="btn btn-y" onclick="act('reopenContract',{id:${id},note:val('ko_n')},'${js(t('Contract reopened'))}',{after:closeM})">${t('Reopen')}</button>`)}`);
+}
+/** History entries in the reader's language (older entries keep their saved English text). */
+function kLogText(x) {
+  const d = x.date ? fd(x.date) : '', n = x.note ? ' · ' + x.note : '';
+  switch (x.kind) {
+    case 'follow': return t('Follow-up') + ': ' + (x.note || '') + (d ? ' · ' + t('next follow-up {d}', { d }) : '');
+    case 'renew': return t('Renewed until {d}', { d }) + n;
+    case 'extend': return t('Extended to {d}', { d }) + n;
+    case 'close': return t('Closed') + ' · ' + t(x.reason || '') + n;
+    case 'reopen': return t('Reopened') + n;
+    case 'create': return LANG === 'ar' ? t('Contract registered') + (d ? ' · ' + t('expiry {d}', { d }) : '') : x.text;
+    case 'edit': return LANG === 'ar' ? t('Contract updated') + (d ? ' · ' + t('expiry {d}', { d }) : '') : x.text;
+    default: return x.text;
+  }
+}
+function kModal(id) {
+  const k = D.contracts.find(x => x.id === id); if (!k) return;
+  let log = []; try { log = JSON.parse(k.log || '[]'); } catch (e) { }
+  const s = kStats(k), x = kState(k), ed = has('contracts', 'edit');
+  const btns = [
+    !x.closed && kCanFollow(k) ? `<button class="btn btn-y btn-sm" onclick="kFollowModal(${k.id})">${t('Follow up')}</button>` : '',
+    ed && !x.closed ? `<button class="btn btn-o btn-sm" onclick="kRenewModal(${k.id})">${t('Renew')}</button><button class="btn btn-o btn-sm" onclick="extendModal(${k.id})">${t('Extend')}</button>` : '',
+    ed ? `<button class="btn btn-o btn-sm" onclick="contractModal(${k.id})">${ic('edit')}${t('Edit')}</button>` : '',
+    ed ? (x.closed ? `<button class="btn btn-o btn-sm" onclick="kReopenModal(${k.id})">${t('Reopen')}</button>` : `<button class="btn btn-o btn-sm" onclick="kCloseModal(${k.id})">${t('Close')}</button>`) : '',
+    has('contracts', 'delete') && !s.cheques.length ? `<button class="btn btn-r btn-sm" onclick="confirmBox('${js(t('Delete contract'))}','${js(t('Delete {n}?', { n: k.opNo }))}','${js(t('Delete'))}',()=>act('delContract',{id:${k.id}},'${js(t('Deleted'))}',{after:closeM}),true)">${ic('trash')}${t('Delete')}</button>` : ''].join('');
+  modal(`${mhead(t('Contract {o}', { o: k.opNo }), esc(nm(B(k.financierId))) + ' · ' + esc(nm(E(k.entityId))))}<div class="mb">
+   <div class="pairs" style="margin-top:0">${pair(t('Expiry date'), `${FD(kExp(k))} ${kChip(k)}`)}${pair(t('Start following up'), t('{n} days before expiry', { n: k.noticeDays || 30 }))}
+    ${pair(t('Follow-up by'), k.ownerId ? esc(UN(k.ownerId)) : `<span class="mut">${t('Not assigned')}</span>`)}${pair(t('Next follow-up'), k.followUpDate ? FD(k.followUpDate) : '—')}
+    ${pair(t('Term'), `${FD(k.startDate)} – ${FD(k.endDate)} · ${k.termMonths} ${t('months')} · ${k.instalments} ${t('instalments')}`)}${pair(t('Principal'), `${M(k.principal, k.currency)} · ${t('Remaining')} ${M(s.remaining, k.currency)}`)}
+    ${x.closed ? pair(t('Closed'), `${esc(kLogText({ kind: 'close', reason: (k.closeReason || '').split(' · ')[0], note: (k.closeReason || '').split(' · ').slice(1).join(' · ') }))} · ${esc(byN(k.closedBy || ''))} ${FD(k.closedAt)}`) : ''}</div>
+   ${btns ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">${btns}</div>` : ''}
+   <h3 class="h3" style="margin:18px 0 12px">${t('Follow-up history')}</h3>${log.slice().reverse().map(e => `<div class="tl"><div>${esc(kLogText(e))} · <span class="mut">${esc(byN(e.by))}</span></div><div class="sm mut">${FD(e.at)}</div></div>`).join('') || `<div class="mut">${t('No history.')}</div>`}
    <h3 class="h3" style="margin:16px 0 8px">${t('Requests against this contract')}</h3>${s.cheques.map(c => `<div class="task"><a class="lnk" href="#/cheque/${c.id}" onclick="closeM()"><bdi dir="ltr">${c.id}</bdi></a> ${chip(c.status)} <span class="sm mut">${payTxt(c)}</span></div>`).join('') || `<div class="mut">${t('None yet.')}</div>`}</div>`, true);
 }
+const logModal = kModal;
 
 /* =================== PAYMENTS ON ACCOUNT =================== */
 function poaPage() {
-  if (!can.seeAll()) return denied();
+  if (!has('poa')) return denied();
   const L = visible().filter(c => isPoa(c) && !['Rejected', 'Cancelled'].includes(c.status));
   const open = L.filter(c => !c.poa), over = open.filter(c => daysUntil(c.poaSettleDate) < 0);
   return phead(t('Payments on account'), t('Advance payments waiting for the invoice that settles them')) +
@@ -126,7 +215,7 @@ function poaPage() {
 /* =================== JOURNAL ENTRIES =================== */
 const KINDS = ['Issue', 'Revaluation', 'Revaluation reversal', 'Clearing', 'Return', 'Payment on account settled'];
 function entriesPage() {
-  if (!can.seeAll()) return denied();
+  if (!has('entries')) return denied();
   const f = F('je', { kind: '', post: '' });
   let L = visible().flatMap(c => entriesOf(c, f.x ? [f.x] : []));
   if (f.ent) L = L.filter(e => String(e.c.entityId) === f.ent);
@@ -156,7 +245,7 @@ function exportEntries() {
 /* =================== REPORTS =================== */
 const REPORTS = [['overview', 'Overview'], ['outstanding', 'Outstanding & revaluation'], ['realised', 'Realised FX differences'], ['ageing', 'Due & ageing'], ['entity', 'By entity & currency'], ['contracts', 'Contracts & remaining principal'], ['poa', 'Payments on account'], ['prior', 'Payments before request']];
 function reportsPage() {
-  if (!can.seeAll()) return denied();
+  if (!has('reports')) return denied();
   const f = F('rep', { tab: 'overview' });
   const fn = { overview: repOverview, outstanding: repOutstanding, realised: repRealised, ageing: repAgeing, entity: repEntity, contracts: repContracts, poa: repPoa, prior: repPrior }[f.tab] || repOverview;
   const r = fn(f);
@@ -286,15 +375,15 @@ function repPrior(f) {
     filters: entSel(f),
     kpis: kpi(t('Payments before request'), N(L.length)) + kpi(t('Value (USD)'), M(L.reduce((a, c) => a + usdOf(c), 0), 'USD')) + kpi(t('Average delay to request'), dTxt(avg(gaps))),
     charts: ccard(t('Per month'), t('Requests flagged as paid before the request · USD · hover for the count'), vbars(months.map(m => m.label), [{ name: t('Value'), values: mv.map(l => l.reduce((a, c) => a + usdOf(c), 0)), color: CH.gold }], { plain: usdT, tipx: i => t('{n} cheques', { n: mv[i].length }), title: t('Payments before request') })),
-    table: tbl([t('Cheque'), t('Requested by'), t('Date paid'), t('Requested on'), { l: t('Days'), n: 1 }, t('How it was paid'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))} · ${payTxt(c)}</div>`, esc(U(c.requesterId).fullName), FD(c.priorDate), FD(c.createdAt), N(days(c.priorDate, c.createdAt)), `${esc(c.priorMethod || '')} · ${esc(c.priorRef || '')}`, chip(c.status)]), t('None.'), 'cards'),
+    table: tbl([t('Cheque'), t('Requested by'), t('Date paid'), t('Requested on'), { l: t('Days'), n: 1 }, t('How it was paid'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))} · ${payTxt(c)}</div>`, esc(UN(c.requesterId)), FD(c.priorDate), FD(c.createdAt), N(days(c.priorDate, c.createdAt)), `${esc(c.priorMethod || '')} · ${esc(c.priorRef || '')}`, chip(c.status)]), t('None.'), 'cards'),
     csv: { name: 'paid-before-request', head: ['Cheque', 'Beneficiary', 'Requested by', 'Date paid', 'Requested on', 'Days', 'Method', 'Reference', 'Amount', 'Currency', 'Stage'], rows: L.map(c => [c.id, B(c.benId).nameEn, U(c.requesterId).fullName, fd(c.priorDate), fd(c.createdAt), days(c.priorDate, c.createdAt), c.priorMethod, c.priorRef, c.amount, c.currency, stageName(c.status)]) }
   };
 }
 
 /* =================== BANKING =================== */
 function banksPage() {
-  if (!can.seeAll()) return denied();
-  const cfo = can.banking();
+  if (!has('banks')) return denied();
+  const cfo = has('banks', 'create') || has('banks', 'edit');
   const bRows = D.banks.map(b => [`<b>${esc(nm(b))}</b>${b.nameAr && LANG !== 'ar' ? `<div class="sm mut" dir="rtl">${esc(b.nameAr)}</div>` : ''}`, b.currency, N(D.accounts.filter(a => a.bankId === b.id).length), activeChip(b.active), cfo ? `<button class="btn btn-o btn-sm" onclick="bankModal(${b.id})">${t('Edit')}</button>` : '']);
   const aRows = D.accounts.map(a => {
     const iss = D.cheques.filter(c => c.issue && c.issue.accountId === a.id), out = iss.filter(c => OUTSTANDING.includes(c.status));
@@ -322,13 +411,13 @@ function accountModal(id) {
    ${mfoot(`<button class="btn btn-y" onclick="act('saveAccount',{id:${id},bankId:val('a_b'),entityId:val('a_e'),last4:val('a_l4'),ledger:val('a_lg'),description:val('a_d'),active:${id ? "chk('a_act')" : 'true'}},'${js(t('Saved'))}',{after:closeM})">${t('Save')}</button>`)}`);
 }
 function booksPage() {
-  if (!can.seeAll()) return denied();
-  const cfo = can.banking();
+  if (!has('books')) return denied();
+  const cfo = has('books', 'create') || has('books', 'edit');
   const rows = D.books.map(k => {
     const used = D.cheques.filter(c => c.issue && c.issue.accountId === k.accountId && +c.issue.no >= k.from && +c.issue.no <= k.to).length;
     const vd = D.voided.filter(v => v.accountId === k.accountId && v.number >= k.from && v.number <= k.to).length, size = k.to - k.from + 1, left = size - used - vd;
     return [esc(acctName(AC(k.accountId))), `<bdi dir="ltr">${k.from} – ${k.to}</bdi>`, `<div style="min-width:140px"><div class="prog"><i style="width:${(used + vd) / size * 100}%"></i></div><div class="sm mut" style="margin-top:4px">${t('{u} used · {v} voided', { u: used, v: vd })}</div></div>`,
-      `<span class="${left < 10 && k.active ? 'late' : ''}">${N(left)}</span>`, activeChip(k.active), `${esc(k.by || '')}<div class="sm mut">${FD(k.at)}</div>`, cfo ? `<button class="btn btn-o btn-sm" onclick="bookModal(${k.id})">${t('Edit')}</button>` : ''];
+      `<span class="${left < 10 && k.active ? 'late' : ''}">${N(left)}</span>`, activeChip(k.active), `${esc(byN(k.by || ''))}<div class="sm mut">${FD(k.at)}</div>`, cfo ? `<button class="btn btn-o btn-sm" onclick="bookModal(${k.id})">${t('Edit')}</button>` : ''];
   });
   return phead(t('Chequebooks'), t('Cheque numbers can be issued only from an active chequebook of the account.'), cfo ? `<button class="btn btn-y" onclick="bookModal(0)" ${D.accounts.length ? '' : 'disabled'}>${ic('plus')}${t('Add chequebook')}</button>` : '') +
     `<div class="card flat">${tbl([t('Account'), t('Numbers'), t('Usage'), { l: t('Left'), n: 1 }, t('Status'), t('Added by'), ''], rows, t('No chequebooks yet.'), 'cards')}</div>`;
@@ -340,9 +429,9 @@ function bookModal(id) {
    ${mfoot(`<button class="btn btn-y" onclick="act('saveBook',{id:${id},accountId:val('k_a'),from:val('k_f'),to:val('k_t'),active:${id ? "chk('k_act')" : 'true'}},'${js(t('Saved'))}',{after:closeM})">${t('Save')}</button>`)}`);
 }
 function voidedPage() {
-  if (!can.seeAll()) return denied();
-  const rows = D.voided.map(v => [esc(acctName(AC(v.accountId))), `<bdi dir="ltr">${v.number}</bdi>`, esc(v.reason), `${esc(v.by)}<div class="sm mut">${FD(v.at)}</div>`]);
-  return phead(t('Voided numbers'), t('Spoiled or cancelled cheque leaves. A voided number can never be issued.'), can.void() ? `<button class="btn btn-y" onclick="voidModal()" ${D.accounts.length ? '' : 'disabled'}>${ic('plus')}${t('Void a number')}</button>` : '') +
+  if (!has('voided')) return denied();
+  const rows = D.voided.map(v => [esc(acctName(AC(v.accountId))), `<bdi dir="ltr">${v.number}</bdi>`, esc(v.reason), `${esc(byN(v.by))}<div class="sm mut">${FD(v.at)}</div>`]);
+  return phead(t('Voided numbers'), t('Spoiled or cancelled cheque leaves. A voided number can never be issued.'), has('voided', 'create') ? `<button class="btn btn-y" onclick="voidModal()" ${D.accounts.length ? '' : 'disabled'}>${ic('plus')}${t('Void a number')}</button>` : '') +
     `<div class="card flat">${tbl([t('Account'), t('Number'), t('Reason'), t('Recorded by')], rows, t('No voided numbers.'), 'cards')}</div>`;
 }
 function voidModal() {
@@ -352,14 +441,14 @@ function voidModal() {
 
 /* =================== BENEFICIARIES =================== */
 function bensPage() {
-  if (!can.seeAll()) return denied();
-  const fin = can.fin(), f = F('ben', { x: '' }), q = f.q.trim().toLowerCase();
+  if (!has('beneficiaries')) return denied();
+  const fin = has('beneficiaries', 'edit'), canDel = has('beneficiaries', 'delete'), f = F('ben', { x: '' }), q = f.q.trim().toLowerCase();
   const use = id => (D.benUse.find(x => x.id === id) || { n: 0 }).n;
   const L = D.beneficiaries.filter(b => (!f.x || b.type === f.x) && (!q || (b.code + ' ' + b.nameEn + ' ' + (b.nameAr || '') + ' ' + (b.contact || '')).toLowerCase().includes(q)));
   const p = pageOf('ben', L);
   const rows = p.rows.map(b => [`<b>${esc(nm(b))}</b>${LANG === 'ar' ? '' : b.nameAr ? `<div class="sm mut" dir="rtl">${esc(b.nameAr)}</div>` : ''}<div class="sm mut"><bdi dir="ltr">${esc(b.code)}</bdi></div>`, t(b.type), `${esc(b.contact || '—')}<div class="sm mut"><bdi dir="ltr">${esc(b.phone || '')}</bdi> ${esc(b.email || '')}</div>`, N(use(b.id)),
-    fin ? `<div style="display:flex;gap:6px"><button class="btn btn-o btn-sm" onclick="benModal(${b.id})">${t('Edit')}</button>${use(b.id) ? '' : `<button class="btn btn-r btn-sm" aria-label="${t('Delete')}" onclick="confirmBox('${js(t('Delete beneficiary'))}','${js(t('Delete {n}?', { n: nm(b) }))}','${js(t('Delete'))}',()=>act('delBen',{id:${b.id}},'${js(t('Deleted'))}'),true)">${ic('trash')}</button>`}</div>` : '']);
-  return phead(t('Beneficiaries'), t('Suppliers, financiers and others who receive cheques'), can.request() ? `<button class="btn btn-y" onclick="benModal(0)">${ic('plus')}${t('Add beneficiary')}</button>` : '') +
+    fin || canDel ? `<div style="display:flex;gap:6px">${fin ? `<button class="btn btn-o btn-sm" onclick="benModal(${b.id})">${t('Edit')}</button>` : ''}${use(b.id) || !canDel ? '' : `<button class="btn btn-r btn-sm" aria-label="${t('Delete')}" onclick="confirmBox('${js(t('Delete beneficiary'))}','${js(t('Delete {n}?', { n: nm(b) }))}','${js(t('Delete'))}',()=>act('delBen',{id:${b.id}},'${js(t('Deleted'))}'),true)">${ic('trash')}</button>`}</div>` : '']);
+  return phead(t('Beneficiaries'), t('Suppliers, financiers and others who receive cheques'), has('beneficiaries', 'create') ? `<button class="btn btn-y" onclick="benModal(0)">${ic('plus')}${t('Add beneficiary')}</button>` : '') +
     `<div class="card flat"><div class="fbar">${searchBox('ben', t('Name, code or contact'))}<select class="in" onchange="setF('ben','x',this.value)"><option value="">${t('All types')}</option>${BENTYPES.map(x => `<option value="${x}" ${x === f.x ? 'selected' : ''}>${t(x)}</option>`).join('')}</select></div>
      ${tbl([t('Beneficiary'), t('Type'), t('Contact'), { l: t('Used'), n: 1 }, ''], rows, t('No beneficiaries yet.'), 'cards')}${pager('ben', p)}</div>`;
 }
@@ -379,10 +468,11 @@ function saveBen(id) {
 
 /* =================== ENTITIES, DEPARTMENTS =================== */
 function entitiesPage() {
-  if (!can.admin()) return denied();
-  const rows = D.entities.map(e => [`<b>${esc(e.nameEn)}</b>`, `<span dir="rtl">${esc(e.nameAr || '')}</span>`, `<span class="chip c-appr">${e.funcCur}</span>`, N(D.cheques.filter(c => c.entityId === e.id).length), N(D.accounts.filter(a => a.entityId === e.id).length), `<button class="btn btn-o btn-sm" onclick="entModal(${e.id})">${t('Edit')}</button>`]);
-  return phead(t('Entities'), t('Each entity keeps its books in its functional currency.'), `<button class="btn btn-y" onclick="entModal(0)">${ic('plus')}${t('Add entity')}</button>`) +
-    (D.settings.funcConfirmed ? `<div class="okbox">${ic('check')}<span>${t('Functional currencies are confirmed.')}</span></div>` : `<div class="warnbox">${ic('alert')}<span style="flex:1">${t('Confirm with the accountant that each functional currency is right before the first approval. It cannot change once cheques are approved.')}</span><button class="btn btn-y btn-sm" onclick="act('confirmFunc',{},'${js(t('Confirmed'))}')">${t('Confirm')}</button></div>`) +
+  if (!has('entities')) return denied();
+  const ed = has('entities', 'edit');
+  const rows = D.entities.map(e => [`<b>${esc(e.nameEn)}</b>`, `<span dir="rtl">${esc(e.nameAr || '')}</span>`, `<span class="chip c-appr">${e.funcCur}</span>`, N(D.cheques.filter(c => c.entityId === e.id).length), N(D.accounts.filter(a => a.entityId === e.id).length), ed ? `<button class="btn btn-o btn-sm" onclick="entModal(${e.id})">${t('Edit')}</button>` : '']);
+  return phead(t('Entities'), t('Each entity keeps its books in its functional currency.'), has('entities', 'create') ? `<button class="btn btn-y" onclick="entModal(0)">${ic('plus')}${t('Add entity')}</button>` : '') +
+    (D.settings.funcConfirmed ? `<div class="okbox">${ic('check')}<span>${t('Functional currencies are confirmed.')}</span></div>` : `<div class="warnbox">${ic('alert')}<span style="flex:1">${t('Confirm with the accountant that each functional currency is right before the first approval. It cannot change once cheques are approved.')}</span>${ed ? `<button class="btn btn-y btn-sm" onclick="act('confirmFunc',{},'${js(t('Confirmed'))}')">${t('Confirm')}</button>` : ''}</div>`) +
     `<div class="card flat">${tbl([t('Name (English)'), t('Name (Arabic)'), t('Functional currency'), { l: t('Cheques'), n: 1 }, { l: t('Bank accounts'), n: 1 }, ''], rows)}</div>`;
 }
 function entModal(id) {
@@ -391,11 +481,18 @@ function entModal(id) {
    ${mfoot(`<button class="btn btn-y" onclick="act('saveEntity',{id:${id},nameEn:val('e_en'),nameAr:val('e_ar'),funcCur:val('e_fc')},'${js(t('Saved'))}',{after:closeM})">${t('Save')}</button>`)}`);
 }
 function deptsPage() {
-  if (!can.admin()) return denied();
-  const rows = D.departments.map(d => [`<b>${esc(d.nameEn)}</b>`, `<span dir="rtl">${esc(d.nameAr || '')}</span>`, N(D.users.filter(u => u.deptId === d.id && u.active).length), N(D.cheques.filter(c => c.deptId === d.id).length), `<button class="btn btn-o btn-sm" onclick="deptModal(${d.id})">${t('Edit')}</button>`]);
+  if (!has('departments')) return denied();
+  const ed = has('departments', 'edit'), del = has('departments', 'delete'), addRole = has('roles', 'create');
+  const rows = D.departments.map(d => {
+    const users = D.users.filter(u => u.deptId === d.id), roles = D.roles.filter(r => r.deptId === d.id), reqs = D.cheques.filter(c => c.deptId === d.id).length;
+    return [`<b>${esc(nm(d))}</b><div class="sm mut" ${LANG === 'ar' ? 'dir="ltr"' : 'dir="rtl"'}>${esc(LANG === 'ar' ? d.nameEn : (d.nameAr || ''))}</div>`, N(users.filter(u => u.active).length),
+      roles.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${roles.map(r => has('roles') ? `<a class="chip role" href="#/role/${r.id}">${esc(nm(r))}</a>` : `<span class="chip role">${esc(nm(r))}</span>`).join('')}</div>` : `<span class="sm mut">${t('Uses the roles for all departments')}</span>`,
+      N(reqs),
+      `<div style="display:flex;gap:6px;flex-wrap:wrap">${ed ? `<button class="btn btn-o btn-sm" onclick="deptModal(${d.id})">${t('Edit')}</button>` : ''}${addRole ? `<a class="btn btn-o btn-sm" href="#/role/new?dept=${d.id}">${ic('plus')}${t('Add role')}</a>` : ''}${del && !users.length && !roles.length && !reqs ? `<button class="btn btn-r btn-sm" aria-label="${t('Delete')}" onclick="confirmBox('${js(t('Delete department'))}','${js(t('Delete {n}?', { n: nm(d) }))}','${js(t('Delete'))}',()=>act('delDept',{id:${d.id}},'${js(t('Deleted'))}'),true)">${ic('trash')}</button>` : ''}</div>`];
+  });
   const by = D.departments.map(d => ({ label: nm(d), value: D.cheques.filter(c => c.deptId === d.id && !['Rejected', 'Cancelled'].includes(c.status)).reduce((a, c) => a + usdOf(c), 0) }));
-  return phead(t('Departments'), '', `<button class="btn btn-y" onclick="deptModal(0)">${ic('plus')}${t('Add department')}</button>`) +
-    `<div class="card flat">${tbl([t('Name (English)'), t('Name (Arabic)'), { l: t('Active users'), n: 1 }, { l: t('Requests'), n: 1 }, ''], rows)}</div>
+  return phead(t('Departments'), t('Each department can have its own roles. Roles for all departments can be given to anyone.'), has('departments', 'create') ? `<button class="btn btn-y" onclick="deptModal(0)">${ic('plus')}${t('Add department')}</button>` : '') +
+    `<div class="card flat">${tbl([t('Department'), { l: t('Active users'), n: 1 }, t('Department roles'), { l: t('Requests'), n: 1 }, ''], rows, '', 'cards')}</div>
      <div class="charts">${ccard(t('Requests by department'), t('USD equivalent, excluding rejected and cancelled'), hbar(by, { plain: usdT, title: t('Requests by department') }))}</div>`;
 }
 function deptModal(id) {
@@ -404,21 +501,41 @@ function deptModal(id) {
    ${mfoot(`<button class="btn btn-y" onclick="act('saveDept',{id:${id},nameEn:val('d_en'),nameAr:val('d_ar')},'${js(t('Saved'))}',{after:closeM})">${t('Save')}</button>`)}`);
 }
 
-/* =================== USERS =================== */
+/* =================== USER ACCOUNTS =================== */
+function scopeName(s) { return s === 'all' ? t('All departments') : s === 'dept' ? t('Own department') : t('Own requests only'); }
+/** Roles a user of this department may have: the department's own roles, then the roles for all departments. */
+function rolesFor(deptId) { return D.roles.filter(r => r.deptId === deptId).concat(D.roles.filter(r => r.deptId == null)); }
+function roleOpts(deptId, cur) {
+  const own = D.roles.filter(r => r.deptId === deptId), all = D.roles.filter(r => r.deptId == null);
+  const o = r => `<option value="${esc(r.key)}" ${r.key === cur ? 'selected' : ''}>${esc(nm(r))}</option>`;
+  return (own.length ? `<optgroup label="${esc(t('Roles of {d}', { d: nm(Dp(deptId)) }))}">${own.map(o).join('')}</optgroup>` : '') + `<optgroup label="${esc(t('Roles for all departments'))}">${all.map(o).join('')}</optgroup>`;
+}
+function uDeptChanged() {
+  const dep = +val('u_dp'), ro = document.getElementById('u_ro'); if (!ro) return;
+  const cur = ro.value, ok = rolesFor(dep).some(r => r.key === cur);
+  ro.innerHTML = roleOpts(dep, ok ? cur : 'USER'); uRoleHint();
+}
+function uRoleHint() {
+  const r = RK(val('u_ro')), h = document.getElementById('u_rh'); if (!h) return;
+  h.innerHTML = r ? `${esc(t('Sees: {s}', { s: scopeName(r.scope) }))} · ${esc(t('{n} pages', { n: Object.keys(r.perms || {}).length }))}${has('roles') && r.id ? ` · <a href="#/role/${r.id}" onclick="closeM()">${t('See the rights')}</a>` : ''}` : '';
+}
 function usersPage() {
-  if (!can.admin()) return denied();
-  const f = F('usr', { x: '' }), q = f.q.trim().toLowerCase();
-  const L = D.users.filter(u => (!f.x || u.role === f.x) && (!q || (u.fullName + ' ' + u.username + ' ' + (u.email || '')).toLowerCase().includes(q)));
-  const noMail = D.users.filter(u => u.active && !u.email).length;
+  if (!has('users')) return denied();
+  const f = F('usr', { x: '', dep: '' }), q = f.q.trim().toLowerCase(), ed = has('users', 'edit');
+  const L = D.users.filter(u => (!f.x || u.role === f.x) && (!f.dep || String(u.deptId) === f.dep) && (!q || (u.fullName + ' ' + (u.fullNameAr || '') + ' ' + u.username + ' ' + (u.email || '')).toLowerCase().includes(q)));
+  const noMail = D.users.filter(u => u.active && !u.email).length, noAr = D.users.filter(u => u.active && !u.fullNameAr).length;
   const status = u => !u.active ? `<span class="chip c-can">${t('Disabled')}</span>` : u.lockedUntil ? `<span class="chip c-ret">${ic('lock')}${t('Locked')}</span>` : `<span class="chip c-clr">${t('Active')}</span>`;
-  const rows = L.map(u => [`<b>${esc(u.fullName)}</b><div class="sm mut"><bdi dir="ltr">${esc(u.username)}</bdi></div>`, u.email ? `<bdi dir="ltr">${esc(u.email)}</bdi>` : `<span class="late">${t('Missing')}</span>`,
-    `<span class="chip role">${t(ROLES[u.role] || u.role)}</span>`, esc(nm(Dp(u.deptId))), u.lang === 'ar' ? 'العربية' : 'English', u.twoFa ? `<span class="chip c-appr">${ic('shield')}${t('On')}</span>` : `<span class="mut">${t('Off')}</span>`, status(u),
-    u.lastLogin ? FD(u.lastLogin) : '<span class="mut">—</span>', `<button class="btn btn-o btn-sm" onclick="userModal(${u.id})">${t('Edit')}</button>`]);
-  const roleCounts = Object.keys(ROLES).map(r => ({ label: t(ROLES[r]), value: D.users.filter(u => u.active && u.role === r).length }));
-  return phead(t('Users'), t('Email is required: it is used for password reset and sign-in codes.'), `<button class="btn btn-y" onclick="userModal(0)">${ic('plus')}${t('Add user')}</button>`) +
+  const other = u => LANG === 'ar' ? (u.fullNameAr ? `<div class="sm mut" dir="ltr">${esc(u.fullName)}</div>` : '') : (u.fullNameAr ? `<div class="sm mut" dir="rtl">${esc(u.fullNameAr)}</div>` : '');
+  const rows = L.map(u => [`<b>${esc(un(u))}</b>${other(u)}<div class="sm mut"><bdi dir="ltr">${esc(u.username)}</bdi></div>`, u.email ? `<bdi dir="ltr">${esc(u.email)}</bdi>` : `<span class="late">${t('Missing')}</span>`,
+    RK(u.role) && has('roles') ? `<a class="chip role" href="#/role/${RK(u.role).id}">${esc(roleName(u.role))}</a>` : `<span class="chip role">${esc(roleName(u.role))}</span>`, esc(nm(Dp(u.deptId))), u.lang === 'ar' ? 'العربية' : 'English', u.twoFa ? `<span class="chip c-appr">${ic('shield')}${t('On')}</span>` : `<span class="mut">${t('Off')}</span>`, status(u),
+    u.lastLogin ? FD(u.lastLogin) : '<span class="mut">—</span>', ed ? `<button class="btn btn-o btn-sm" onclick="userModal(${u.id})">${t('Edit')}</button>` : '']);
+  const roleCounts = D.roles.map(r => ({ label: nm(r), value: D.users.filter(u => u.active && u.role === r.key).length })).filter(x => x.value > 0);
+  return phead(t('User accounts'), t('Email is required: it is used for password reset and sign-in codes.'), has('users', 'create') ? `<button class="btn btn-y" onclick="userModal(0)">${ic('plus')}${t('Add user')}</button>` : '') +
     (noMail ? `<div class="warnbox">${ic('alert')}<span>${t('{n} active users have no email and cannot reset their password. Add it.', { n: noMail })}</span></div>` : '') +
-    (D.settings.mailReady ? '' : `<div class="vbox">${ic('info')}<span>${t('Email is not set up yet, so reset links and sign-in codes cannot be sent.')} <a href="#/settings" onclick="F('set').tab='smtp'">${t('Set up email')}</a></span></div>`) +
-    `<div class="card flat"><div class="fbar">${searchBox('usr', t('Name, username or email'))}<select class="in" onchange="setF('usr','x',this.value)"><option value="">${t('All roles')}</option>${Object.keys(ROLES).map(r => `<option value="${r}" ${r === f.x ? 'selected' : ''}>${t(ROLES[r])}</option>`).join('')}</select></div>
+    (noAr ? `<div class="vbox">${ic('info')}<span>${noAr === 1 ? t('1 active user has no Arabic name yet, so the English name shows in Arabic screens.') : t('{n} active users have no Arabic name yet, so their English name shows in Arabic screens.', { n: noAr })}</span></div>` : '') +
+    (D.settings.mailReady ? '' : `<div class="vbox">${ic('info')}<span>${t('Email is not set up yet, so reset links and sign-in codes cannot be sent.')} ${has('settings') ? `<a href="#/settings" onclick="F('set').tab='smtp'">${t('Set up email')}</a>` : ''}</span></div>`) +
+    `<div class="card flat"><div class="fbar">${searchBox('usr', t('Name, username or email'))}<select class="in" onchange="setF('usr','x',this.value)"><option value="">${t('All roles')}</option>${D.roles.map(r => `<option value="${esc(r.key)}" ${r.key === f.x ? 'selected' : ''}>${esc(nm(r))}</option>`).join('')}</select>
+     <select class="in" onchange="setF('usr','dep',this.value)"><option value="">${t('All departments')}</option>${D.departments.map(d => `<option value="${d.id}" ${String(d.id) === f.dep ? 'selected' : ''}>${esc(nm(d))}</option>`).join('')}</select></div>
      ${tbl([t('User'), t('Email'), t('Role'), t('Department'), t('Language'), t('Two-step'), t('Status'), t('Last sign-in'), ''], rows, t('No users.'), 'cards')}</div>
      <div class="charts">${ccard(t('Active users by role'), '', hbar(roleCounts, { plain: v => String(v), title: t('Active users by role') }))}</div>`;
 }
@@ -426,26 +543,147 @@ function userModal(id) {
   const u = D.users.find(x => x.id === id) || { role: 'USER', deptId: (D.departments[0] || {}).id, lang: 'ar', active: true, mustChange: true };
   const mail = D.settings.mailReady;
   modal(`${mhead(id ? t('Edit user') : t('Add user'), id ? esc(u.username) : '')}<div class="mb">
-   <div class="fgrid" style="margin-top:0">${fld('u_fn', t('Full name'), inp('u_fn', u.fullName), 1)}${fld('u_un', t('Username'), inp('u_un', u.username, 'dir="ltr" autocomplete="off"'), 1)}
-    ${fld('u_em', t('Email'), inp('u_em', u.email, 'dir="ltr" type="email" autocomplete="off"'), 1)}${fld('u_ro', t('Role'), sel('u_ro', Object.keys(ROLES).map(r => [r, t(ROLES[r])]), u.role), 1)}
-    ${fld('u_dp', t('Department'), sel('u_dp', D.departments.map(d => [d.id, nm(d)]), u.deptId), 1)}${fld('u_lg', t('Language'), sel('u_lg', [['ar', 'العربية'], ['en', 'English']], u.lang), 1)}
-    ${fld('u_pw', id ? t('New password (leave empty to keep)') : t('Temporary password'), `<input class="in" id="u_pw" type="password" autocomplete="new-password" oninput="polHint('u_pw','u_ph')"><div class="pol" id="u_ph"></div>`, !id, 'full')}</div>
+   <div class="fgrid" style="margin-top:0">${fld('u_fn', t('Full name (English)'), inp('u_fn', u.fullName, 'dir="ltr"'), 1)}${fld('u_fa', t('Full name (Arabic)'), inp('u_fa', u.fullNameAr, 'dir="rtl"'))}
+    ${fld('u_un', t('Username'), inp('u_un', u.username, 'dir="ltr" autocomplete="off"'), 1)}${fld('u_em', t('Email'), inp('u_em', u.email, 'dir="ltr" type="email" autocomplete="off"'), 1)}
+    ${fld('u_dp', t('Department'), sel('u_dp', D.departments.map(d => [d.id, nm(d)]), u.deptId, 'onchange="uDeptChanged()"'), 1)}
+    ${fld('u_ro', t('Role'), `<select class="in" id="u_ro" onchange="uRoleHint()">${roleOpts(u.deptId, u.role)}</select><div class="hint" id="u_rh"></div>`, 1)}
+    ${fld('u_lg', t('Language'), sel('u_lg', [['ar', 'العربية'], ['en', 'English']], u.lang), 1)}
+    ${fld('u_pw', id ? t('New password (leave empty to keep)') : t('Temporary password'), `<input class="in" id="u_pw" type="password" autocomplete="new-password" oninput="polHint('u_pw','u_ph')"><div class="pol" id="u_ph"></div>`, !id)}</div>
+   <div class="hint">${t('The name shows in the language each person uses ChequeTrack in. Without an Arabic name, the English one is used.')}</div>
    <div style="margin-top:12px">${swRow('u_act', t('Active'), u.active)}${swRow('u_mc', t('Must change password at next sign-in'), u.mustChange)}
     ${swRow('u_2f', t('Two-step verification'), u.twoFa, mail ? t('A 6-digit code is emailed at each sign-in.') : t('Set up email first.'), !mail && !u.twoFa)}</div>
    ${id ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">${u.lockedUntil ? `<button class="btn btn-o btn-sm" onclick="act('unlockUser',{id:${id}},'${js(t('Account unlocked'))}',{after:closeM})">${ic('lock')}${t('Unlock')}</button>` : ''}
      <button class="btn btn-o btn-sm" ${mail && u.email ? '' : 'disabled'} onclick="act('sendReset',{id:${id}},'${js(t('Reset link sent to {e}', { e: u.email }))}')">${ic('mail')}${t('Send password reset link')}</button></div>` : ''}</div>
    ${mfoot(`<button class="btn btn-y" onclick="saveUser(${id})">${t('Save')}</button>`)}`, true);
+  uRoleHint();
 }
 function saveUser(id) {
-  act('saveUser', { id, fullName: val('u_fn'), username: val('u_un'), email: val('u_em'), role: val('u_ro'), deptId: val('u_dp'), lang: val('u_lg'), password: document.getElementById('u_pw').value, active: chk('u_act'), mustChange: chk('u_mc'), twoFa: chk('u_2f') }, t('User saved'), { after: closeM });
+  act('saveUser', { id, fullName: val('u_fn'), fullNameAr: val('u_fa'), username: val('u_un'), email: val('u_em'), role: val('u_ro'), deptId: val('u_dp'), lang: val('u_lg'), password: document.getElementById('u_pw').value, active: chk('u_act'), mustChange: chk('u_mc'), twoFa: chk('u_2f') }, t('User saved'), { after: closeM });
+}
+
+/* =================== ROLES & PERMISSIONS =================== */
+const PAGE_LABEL = { requests: 'Cheque requests (own)', cheques: 'Cheques list', approvals: 'Approvals', issue: 'Issue cheques', followup: 'Due & follow-up', contracts: 'Contracts register', poa: 'Payments on account', rates: 'Exchange rates',
+  reports: 'Reports', entries: 'Journal entries', banks: 'Banks & accounts', books: 'Chequebooks', voided: 'Voided numbers', users: 'User accounts', roles: 'Roles & permissions', departments: 'Departments', security: 'Sign-in & passwords',
+  beneficiaries: 'Beneficiaries', entities: 'Entities', settings: 'Settings', telegram: 'Telegram alerts', audit: 'Audit log', checklist: 'Go-live checklist' };
+const PAGE_HINT = { requests: "Create raises a request; Delete cancels one's own request while it waits.", cheques: 'Which cheques depends on "Cheques this role sees".', approvals: 'Approving also allows rejecting at that stage.',
+  followup: 'Clear / return records the bank result; Settle closes a returned cheque.', contracts: 'Edit also covers extend, renew, close and reopen.', rates: 'Edit corrects a rate that is not used by a cheque yet.',
+  users: 'Edit also covers unlock and password reset links.', telegram: 'Edit connects or disconnects the channel.', beneficiaries: 'Create also lets requesters add a beneficiary from the request form.' };
+const OP_LABEL = { view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete', approve: 'First approval', approve2: 'Second approval', issue: 'Issue cheques', clear: 'Clear / return', settle: 'Settle', follow: 'Follow up', post: 'Mark as posted', send: 'Send digest' };
+const GROUPS = [['ops', 'Operations'], ['fin', 'Finance'], ['users', 'User management'], ['data', 'Master data'], ['system', 'System']];
+const CRUD = ['view', 'create', 'edit', 'delete'];
+function opShort(op) { return { view: LANG === 'ar' ? 'ع' : 'V', create: LANG === 'ar' ? 'إ' : 'C', edit: LANG === 'ar' ? 'ت' : 'E', delete: LANG === 'ar' ? 'ح' : 'D' }[op] || '★'; }
+function rolesPage() {
+  if (!has('roles')) return denied();
+  const f = F('rol', { tab: 'list', dep: '' }), q = f.q.trim().toLowerCase();
+  const L = D.roles.filter(r => (!f.dep || (f.dep === 'all' ? r.deptId == null : String(r.deptId) === f.dep)) && (!q || (r.nameEn + ' ' + (r.nameAr || '')).toLowerCase().includes(q)));
+  const users = r => D.users.filter(u => u.role === r.key && u.active).length;
+  const tabs = [['list', t('Roles')], ['matrix', t('Access matrix')]];
+  const bar = `<div class="ul-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${k === f.tab}" class="${k === f.tab ? 'on' : ''}" onclick="setF('rol','tab','${k}')">${l}</button>`).join('')}</div>
+    <div class="card flat"><div class="fbar">${searchBox('rol', t('Role name'))}<select class="in" onchange="setF('rol','dep',this.value)"><option value="">${t('All roles')}</option><option value="all" ${f.dep === 'all' ? 'selected' : ''}>${t('Roles for all departments')}</option>${D.departments.map(d => `<option value="${d.id}" ${String(d.id) === f.dep ? 'selected' : ''}>${esc(t('Roles of {d}', { d: nm(d) }))}</option>`).join('')}</select>
+    ${f.tab === 'matrix' ? `<button class="btn btn-o btn-sm" onclick="exportMatrix()">${ic('dl')}${t('Export to Excel')}</button>` : ''}</div>`;
+  let body;
+  if (f.tab === 'matrix') {
+    S.mxRoles = L;
+    body = L.length ? `<div class="sm mut" style="margin:4px 16px 10px">${t('{v} view · {c} create · {e} edit · {d} delete · ★ workflow step (hover for the name)', { v: opShort('view'), c: opShort('create'), e: opShort('edit'), d: opShort('delete') })}</div>
+      <div class="tw"><table class="tbl mx"><thead><tr><th>${t('Page')}</th>${L.map(r => `<th><a href="#/role/${r.id}">${esc(nm(r))}</a></th>`).join('')}</tr></thead><tbody>
+      ${GROUPS.map(([g, gl]) => `<tr class="mxg"><td colspan="${L.length + 1}">${t(gl)}</td></tr>` + D.permCatalog.filter(c => c.group === g).map(c => `<tr><td>${t(PAGE_LABEL[c.page] || c.page)}</td>${L.map(r => { const ops = (r.perms || {})[c.page] || [];
+        return `<td>${ops.length ? ops.map(o => `<span class="op ${CRUD.includes(o) ? '' : 'wf'}" title="${esc(t(OP_LABEL[o] || o))}">${opShort(o)}</span>`).join('') : '<span class="mut">—</span>'}</td>`; }).join('')}</tr>`).join('')).join('')}
+      </tbody></table></div>` : `<div class="empty">${t('No roles.')}</div>`;
+  } else {
+    body = tbl([t('Role'), t('Department'), t('Cheques it sees'), t('Rights'), { l: t('Active users'), n: 1 }, t('Last change'), ''], L.map(r => {
+      const pages = Object.keys(r.perms || {}), n = users(r);
+      return [`<a class="lnk" href="#/role/${r.id}"><b>${esc(nm(r))}</b></a>${r.builtIn ? ` <span class="chip c-lock">${t('Built-in')}</span>` : ''}<div class="sm mut" ${LANG === 'ar' ? 'dir="ltr"' : 'dir="rtl"'}>${esc(LANG === 'ar' ? r.nameEn : (r.nameAr || ''))}</div>`,
+        r.deptId ? esc(nm(Dp(r.deptId))) : `<span class="mut">${t('All departments')}</span>`, esc(scopeName(r.scope)),
+        pages.length ? `<span class="sm">${esc(pages.slice(0, 4).map(p => t(PAGE_LABEL[p] || p)).join(' · '))}${pages.length > 4 ? ' · ' + esc(t('{n} more', { n: pages.length - 4 })) : ''}</span>` : `<span class="mut">${t('No access')}</span>`,
+        n ? `<a href="#/users" onclick="F('usr').x='${js(r.key)}'">${N(n)}</a>` : N(0), r.updatedAt ? `${esc(byN(r.updatedBy))}<div class="sm mut">${FD(r.updatedAt)}</div>` : '<span class="mut">—</span>',
+        `<div style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn btn-o btn-sm" href="#/role/${r.id}">${has('roles', 'edit') ? t('Edit') : t('Open')}</a>${has('roles', 'create') ? `<a class="btn btn-o btn-sm" href="#/role/new?copy=${r.id}">${t('Copy')}</a>` : ''}</div>`];
+    }), t('No roles.'), 'cards');
+  }
+  return phead(t('Roles & permissions'), t('What each role can open and do, page by page, and which cheques it sees. Built-in roles keep the access the system had before.'), has('roles', 'create') ? `<a class="btn btn-y" href="#/role/new">${ic('plus')}${t('Add role')}</a>` : '') + bar + body + '</div>';
+}
+function exportMatrix() {
+  const L = S.mxRoles || D.roles;
+  csv('access-matrix', ['Group', 'Page', ...L.map(r => r.nameEn)], D.permCatalog.map(c => [c.group, PAGE_LABEL[c.page] || c.page, ...L.map(r => ((r.perms || {})[c.page] || []).map(o => OP_LABEL[o] || o).join(', '))]));
+}
+/** Role editor: the draft lives in S.rd so ticking boxes keeps what was typed. */
+function rolePage(arg) {
+  if (!has('roles')) return denied();
+  const isNew = arg === 'new', src = isNew ? D.roles.find(r => String(r.id) === S.q.get('copy')) : D.roles.find(r => String(r.id) === arg);
+  if (!isNew && !src) return `<div class="card empty">${t('Role not found.')} <a href="#/roles">${t('Back to roles')}</a></div>`;
+  const key = isNew ? 'new:' + (S.q.get('copy') || '') + ':' + (S.q.get('dept') || '') : 'id:' + src.id + ':' + src.updatedAt;
+  if (!S.rd || S.rd.key !== key) S.rd = {
+    key, nameEn: isNew ? (src ? src.nameEn + ' (copy)' : '') : src.nameEn, nameAr: isNew ? (src && src.nameAr ? src.nameAr + ' (نسخة)' : '') : (src.nameAr || ''),
+    deptId: isNew ? +(S.q.get('dept') || (src && src.deptId) || 0) : (src.deptId || 0), scope: src ? src.scope : 'own', notes: src && !isNew ? src.notes : '',
+    perms: JSON.parse(JSON.stringify(src ? src.perms || {} : { requests: ['view', 'create', 'delete'], rates: ['view'], beneficiaries: ['create'] }))
+  };
+  const rd = S.rd, canSave = isNew ? has('roles', 'create') : has('roles', 'edit'), dis = canSave ? '' : 'disabled', builtIn = !isNew && src.builtIn;
+  const users = isNew ? [] : D.users.filter(u => u.role === src.key);
+  const cb = (page, op, ops) => ops.includes(op) ? `<label class="pchk"><input type="checkbox" ${dis} ${(rd.perms[page] || []).includes(op) ? 'checked' : ''} onchange="rdTick('${page}','${op}',this.checked)" aria-label="${esc(t(PAGE_LABEL[page]) + ' · ' + t(OP_LABEL[op]))}"></label>` : '<span class="mut">·</span>';
+  const grid = GROUPS.map(([g, gl]) => `<tr class="mxg"><td colspan="7">${t(gl)}</td></tr>` + D.permCatalog.filter(c => c.group === g).map(c => {
+    const extra = c.ops.filter(o => !CRUD.includes(o)), on = rd.perms[c.page] || [];
+    return `<tr class="${on.length ? 'pon' : ''}"><td><div class="b">${t(PAGE_LABEL[c.page] || c.page)}</div>${PAGE_HINT[c.page] ? `<div class="sm mut">${t(PAGE_HINT[c.page])}</div>` : ''}</td>
+      ${CRUD.map(op => `<td class="pc" data-h="${esc(t(OP_LABEL[op]))}">${cb(c.page, op, c.ops)}</td>`).join('')}
+      <td data-h="${esc(t('Workflow steps'))}">${extra.length ? extra.map(op => `<label class="pchk wf"><input type="checkbox" ${dis} ${on.includes(op) ? 'checked' : ''} onchange="rdTick('${c.page}','${op}',this.checked)"> ${t(OP_LABEL[op])}</label>`).join('') : '<span class="mut">—</span>'}</td>
+      <td>${canSave ? `<button class="btn btn-o btn-sm" onclick="rdAll('${c.page}')">${on.length === c.ops.length ? t('None') : t('All')}</button>` : ''}</td></tr>`;
+  }).join('')).join('');
+  const wf = ['approvals', 'issue', 'followup', 'poa', 'entries'].some(p => (rd.perms[p] || []).some(o => o !== 'view'));
+  return `<nav class="sm" aria-label="${t('Breadcrumb')}"><a href="#/roles">${t('Roles & permissions')}</a> <span class="mut">/ ${esc(isNew ? t('New role') : nm(src))}</span></nav>` +
+    phead(isNew ? t('New role') : esc(nm(src)), builtIn ? t('Built-in role: you can change its rights and names, but it is for all departments and cannot be deleted.') : t('Tick what this role may open and do on each page.'),
+      `<div style="display:flex;gap:8px;flex-wrap:wrap">${!isNew && has('roles', 'create') ? `<a class="btn btn-o" href="#/role/new?copy=${src.id}">${t('Copy as new role')}</a>` : ''}${!isNew && !builtIn && has('roles', 'delete') && !users.length ? `<button class="btn btn-r" onclick="confirmBox('${js(t('Delete role'))}','${js(t('Delete {n}?', { n: nm(src) }))}','${js(t('Delete'))}',()=>act('delRole',{id:${src.id}},'${js(t('Deleted'))}',{after:()=>{S.rd=null;go('roles')}}),true)">${ic('trash')}${t('Delete')}</button>` : ''}${canSave ? `<button class="btn btn-y" onclick="saveRole(${isNew ? 0 : src.id})">${t('Save role')}</button>` : ''}</div>`) +
+    `<div class="row"><section class="card col2"><h2 class="h3">${t('Role')}</h2><div class="fgrid">
+      ${fld('rl_en', t('Name (English)'), `<input class="in" id="rl_en" dir="ltr" value="${esc(rd.nameEn)}" ${dis} oninput="S.rd.nameEn=this.value">`, 1)}
+      ${fld('rl_ar', t('Name (Arabic)'), `<input class="in" id="rl_ar" dir="rtl" value="${esc(rd.nameAr)}" ${dis} oninput="S.rd.nameAr=this.value">`)}
+      ${fld('rl_dp', t('Department'), `<select class="in" id="rl_dp" ${dis || (builtIn ? 'disabled' : '')} onchange="S.rd.deptId=+this.value"><option value="0">${t('All departments')}</option>${D.departments.map(d => `<option value="${d.id}" ${d.id === rd.deptId ? 'selected' : ''}>${esc(nm(d))}</option>`).join('')}</select>`)}
+      ${fld('rl_nt', t('Notes'), `<input class="in" id="rl_nt" value="${esc(rd.notes)}" ${dis} oninput="S.rd.notes=this.value">`)}</div>
+      <div class="lbl" style="margin-top:16px">${t('Cheques this role sees')}</div><div class="seg">${['own', 'dept', 'all'].map(k => `<label class="${rd.scope === k ? 'on' : ''}"><input type="radio" name="rl_sc" ${dis} ${rd.scope === k ? 'checked' : ''} onchange="S.rd.scope='${k}';render()"> ${scopeName(k)}</label>`).join('')}</div>
+      <div class="hint">${t('Approving, issuing and clearing apply only to the cheques the role sees.')}${wf && rd.scope === 'own' ? ` <span class="late">${t('With "Own requests only", this role cannot act on other people\'s cheques.')}</span>` : ''}</div></section>
+     <section class="card col1"><h2 class="h3">${t('Users with this role')}</h2>${users.length ? users.map(u => `<div class="task"><div style="flex:1">${esc(un(u))}<div class="sm mut">${esc(nm(Dp(u.deptId)))}</div></div>${u.active ? '' : `<span class="chip c-can">${t('Disabled')}</span>`}</div>`).join('') : `<div class="empty sm">${isNew ? t('Save the role, then give it to users under User accounts.') : t('No users have this role.')}</div>`}</section></div>
+     <section class="card"><div class="chead"><h2 class="h3">${t('Rights by page')}</h2>${canSave ? `<div style="display:flex;gap:8px"><button class="btn btn-o btn-sm" onclick="rdBulk('view')">${t('View everything')}</button><button class="btn btn-o btn-sm" onclick="rdBulk('none')">${t('Clear all')}</button></div>` : ''}</div>
+      <div class="tw"><table class="tbl perm cards"><thead><tr><th>${t('Page')}</th>${CRUD.map(op => `<th class="pc">${t(OP_LABEL[op])}</th>`).join('')}<th>${t('Workflow steps')}</th><th></th></tr></thead><tbody>${grid}</tbody></table></div></section>`;
+}
+function rdTick(page, op, on) {
+  const p = S.rd.perms, cur = new Set(p[page] || []);
+  if (on) { cur.add(op); if (op !== 'view' && !(op === 'create' && page === 'beneficiaries')) cur.add('view'); } else { cur.delete(op); if (op === 'view') cur.clear(); }
+  if (cur.size) p[page] = [...cur]; else delete p[page];
+  render();
+}
+function rdAll(page) {
+  const c = D.permCatalog.find(x => x.page === page), on = S.rd.perms[page] || [];
+  if (on.length === c.ops.length) delete S.rd.perms[page]; else S.rd.perms[page] = c.ops.slice();
+  render();
+}
+function rdBulk(kind) {
+  if (kind === 'none') S.rd.perms = {};
+  else D.permCatalog.forEach(c => { const cur = new Set(S.rd.perms[c.page] || []); cur.add('view'); S.rd.perms[c.page] = [...cur]; });
+  render();
+}
+function saveRole(id) {
+  const rd = S.rd, mine = id && RK(S.user.role) && RK(S.user.role).id === id;
+  const go2 = () => act('saveRole', { id, nameEn: rd.nameEn.trim(), nameAr: rd.nameAr.trim(), deptId: rd.deptId, scope: rd.scope, notes: rd.notes, perms: rd.perms }, t('Role saved'), { after: j => { S.rd = null; if (!id && j.id) go('role/' + j.id); } });
+  if (mine && !(rd.perms.roles || []).includes('edit')) confirmBox(t('Your own role'), t('You are taking away your own right to change roles. Continue?'), t('Save role'), go2, true);
+  else go2();
+}
+
+/* =================== SIGN-IN & PASSWORDS =================== */
+function securityPage() {
+  if (!has('security')) return denied();
+  const P = D.settings.policy, ed = has('security', 'edit'), dis = ed ? '' : 'disabled', U_ = D.users.filter(u => u.active);
+  const save = (sec, body) => !ed ? '' : `<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-y" onclick="act('saveSettings',Object.assign({section:'${sec}'},${body}),'${js(t('Settings saved'))}')">${t('Save')}</button></div>`;
+  return phead(t('Sign-in & passwords'), t('Password rules, account lock and session time for every user.')) +
+    (has('users') ? `<div class="kpis">${kpi(t('Active users'), N(U_.length))}${kpi(t('Two-step verification on'), N(U_.filter(u => u.twoFa).length))}${kpi(t('Locked accounts'), N(D.users.filter(u => u.lockedUntil).length))}${kpi(t('Users without email'), `<span class="${U_.some(u => !u.email) ? 'late' : ''}">${N(U_.filter(u => !u.email).length)}</span>`)}</div>` : '') +
+    `<section class="card" style="max-width:900px">` + (`<div class="fgrid">${fld('p_ml', t('Minimum length'), inp('p_ml', P.minLen, 'inputmode="numeric" dir="ltr" ' + dis))}${fld('p_ex', t('Password expires after (days, 0 = never)'), inp('p_ex', P.expiryDays, 'inputmode=\"numeric\" dir=\"ltr\" ' + dis))}
+     ${fld('p_ma', t('Failed attempts before lock'), inp('p_ma', P.maxAttempts, 'inputmode=\"numeric\" dir=\"ltr\" ' + dis))}${fld('p_lm', t('Lock for (minutes)'), inp('p_lm', P.lockMinutes, 'inputmode=\"numeric\" dir=\"ltr\" ' + dis))}${fld('p_sm', t('Sign out after inactivity (minutes)'), inp('p_sm', P.sessionMin, 'inputmode=\"numeric\" dir=\"ltr\" ' + dis))}</div>
+    <div style="margin-top:14px">${swRow('p_up', t('Upper and lower case letters'), P.upper, '', !ed)}${swRow('p_dg', t('At least one number'), P.digit, '', !ed)}${swRow('p_sp', t('At least one symbol'), P.special, '', !ed)}${swRow('p_fc', t('New users change the password at first sign-in'), P.firstChange, '', !ed)}</div>
+    ${save('policy', "{minLen:val('p_ml'),expiryDays:val('p_ex'),maxAttempts:val('p_ma'),lockMinutes:val('p_lm'),sessionMin:val('p_sm'),upper:chk('p_up'),digit:chk('p_dg'),special:chk('p_sp'),firstChange:chk('p_fc')}")}`) + `</section>`;
 }
 
 /* =================== SETTINGS =================== */
 function settingsPage() {
-  if (!can.admin()) return denied();
-  const f = F('set', { tab: 'general' }), s = D.settings, P = s.policy, sm = s.smtp || {}, A = s.acc;
-  const tabs = [['general', 'General'], ['approval', 'Approvals & rates'], ['accounts', 'Accounts'], ['smtp', 'Email'], ['alerts', 'Alerts'], ['policy', 'Sign-in policy']];
-  const save = (sec, body) => `<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-y" onclick="act('saveSettings',Object.assign({section:'${sec}'},${body}),'${js(t('Settings saved'))}')">${t('Save')}</button></div>`;
+  if (!has('settings')) return denied();
+  const f = F('set', { tab: 'general' }), s = D.settings, sm = s.smtp || {}, A = s.acc, ed = has('settings', 'edit');
+  const tabs = [['general', 'General'], ['approval', 'Approvals & rates'], ['accounts', 'Accounts'], ['smtp', 'Email'], ['alerts', 'Alerts']];
+  if (!tabs.some(x => x[0] === f.tab)) f.tab = 'general';
+  const save = (sec, body) => !ed ? '' : `<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-y" onclick="act('saveSettings',Object.assign({section:'${sec}'},${body}),'${js(t('Settings saved'))}')">${t('Save')}</button></div>`;
   let body = '';
   if (f.tab === 'general') body = `<div class="fgrid">${fld('g_c', t('Company name'), inp('g_c', s.company), 1)}${fld('g_rc', t('Report currency'), sel('g_rc', CURS, s.reportCurrency))}${fld('g_tz', t('Time zone'), inp('g_tz', s.timeZone, 'dir="ltr"'))}</div>
     <div style="margin-top:16px"><div class="lbl">${t('Logo')}</div><div class="drop"><img class="blogo" src="${esc((S.logo ?? s.logo) || '/img/logo.svg')}" alt="">
@@ -461,17 +699,13 @@ function settingsPage() {
      ${fld('m_u', t('User name'), inp('m_u', sm.user, 'dir="ltr" autocomplete="off"'))}${fld('m_pw', t('Password'), `<input class="in" id="m_pw" type="password" autocomplete="new-password" placeholder="${sm.passSet ? t('Saved — type to replace') : ''}">`)}
      ${fld('m_f', t('Sender email'), inp('m_f', sm.from, 'dir="ltr" type="email"'))}${fld('m_fn', t('Sender name'), inp('m_fn', sm.fromName || 'ChequeTrack'))}</div>
     ${swRow('m_ssl', t('Use TLS (STARTTLS)'), sm.ssl !== false)}
-    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-o" ${s.mailReady ? '' : 'disabled'} onclick="act('testEmail',{},'${js(t('Test email sent to {e}', { e: S.user.email || '' }))}')">${ic('mail')}${t('Send test email to me')}</button>
-     <button class="btn btn-y" onclick="act('saveSettings',{section:'smtp',host:val('m_h'),port:val('m_p'),user:val('m_u'),password:document.getElementById('m_pw').value,from:val('m_f'),fromName:val('m_fn'),ssl:chk('m_ssl')},'${js(t('Settings saved'))}')">${t('Save')}</button></div>`;
+    ${!ed ? '' : `<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px"><button class="btn btn-o" ${s.mailReady ? '' : 'disabled'} onclick="act('testEmail',{},'${js(t('Test email sent to {e}', { e: S.user.email || '' }))}')">${ic('mail')}${t('Send test email to me')}</button>
+     <button class="btn btn-y" onclick="act('saveSettings',{section:'smtp',host:val('m_h'),port:val('m_p'),user:val('m_u'),password:document.getElementById('m_pw').value,from:val('m_f'),fromName:val('m_fn'),ssl:chk('m_ssl')},'${js(t('Settings saved'))}')">${t('Save')}</button></div>`}`;
   if (f.tab === 'alerts') { const EV = [['approved', 'Approved by the CFO'], ['approved2', 'Second approval'], ['issued', 'Cheque issued'], ['received', 'Received by requester'], ['delivered', 'Handed to beneficiary'], ['cleared', 'Cleared'], ['returned', 'Returned'], ['solved', 'Returned cheque settled'], ['rejected', 'Rejected']];
     body = `<div class="fgrid">${fld('l_d', t('Alert window (days before the due date)'), inp('l_d', s.alertDays, 'inputmode="numeric" dir="ltr"'), 1)}${fld('l_t', t('Daily digest time'), inp('l_t', s.alertTime, 'dir="ltr" placeholder="09:00"'), 1)}</div>
     <div style="margin-top:14px">${swRow('l_hide', t('Hide Telegram from the menu'), s.hideTelegram)}</div><h3 class="h3" style="margin:18px 0 6px">${t('Post to Telegram when')}</h3>
     ${EV.map(([k, l]) => `<label class="chk"><input type="checkbox" class="tge" data-k="${k}" ${s.tgEvents[k] ? 'checked' : ''}> ${t(l)}</label>`).join('')}
     ${save('alerts', "{alertDays:val('l_d'),alertTime:val('l_t'),hideTelegram:chk('l_hide'),tgEvents:Object.fromEntries([...document.querySelectorAll('.tge')].map(e=>[e.dataset.k,e.checked]))}")}`; }
-  if (f.tab === 'policy') body = `<div class="fgrid">${fld('p_ml', t('Minimum length'), inp('p_ml', P.minLen, 'inputmode="numeric" dir="ltr"'))}${fld('p_ex', t('Password expires after (days, 0 = never)'), inp('p_ex', P.expiryDays, 'inputmode="numeric" dir="ltr"'))}
-     ${fld('p_ma', t('Failed attempts before lock'), inp('p_ma', P.maxAttempts, 'inputmode="numeric" dir="ltr"'))}${fld('p_lm', t('Lock for (minutes)'), inp('p_lm', P.lockMinutes, 'inputmode="numeric" dir="ltr"'))}${fld('p_sm', t('Sign out after inactivity (minutes)'), inp('p_sm', P.sessionMin, 'inputmode="numeric" dir="ltr"'))}</div>
-    <div style="margin-top:14px">${swRow('p_up', t('Upper and lower case letters'), P.upper)}${swRow('p_dg', t('At least one number'), P.digit)}${swRow('p_sp', t('At least one symbol'), P.special)}${swRow('p_fc', t('New users change the password at first sign-in'), P.firstChange)}</div>
-    ${save('policy', "{minLen:val('p_ml'),expiryDays:val('p_ex'),maxAttempts:val('p_ma'),lockMinutes:val('p_lm'),sessionMin:val('p_sm'),upper:chk('p_up'),digit:chk('p_dg'),special:chk('p_sp'),firstChange:chk('p_fc')}")}`;
   return phead(t('Settings'), '') + `<div class="ul-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${k === f.tab}" class="${k === f.tab ? 'on' : ''}" onclick="setF('set','tab','${k}')">${t(l)}</button>`).join('')}</div><section class="card" style="max-width:900px">${body}</section>`;
 }
 async function pickLogo(inp) {
@@ -482,9 +716,9 @@ async function pickLogo(inp) {
 
 /* =================== TELEGRAM =================== */
 function telegramPage() {
-  if (!can.seeAll()) return denied();
-  const s = D.settings, mg = can.telegram();
-  return phead(t('Telegram alerts'), t('Cheque events and a daily digest are posted to a Telegram channel.'), `<button class="btn btn-o" ${s.tokenSet ? '' : 'disabled'} onclick="act('sendDigest',{},'${js(t('Digest sent'))}')">${ic('bell')}${t('Send digest now')}</button>`) +
+  if (!has('telegram')) return denied();
+  const s = D.settings, mg = has('telegram', 'edit');
+  return phead(t('Telegram alerts'), t('Cheque events and a daily digest are posted to a Telegram channel.'), `${has('telegram', 'send') ? `<button class="btn btn-o" ${s.tokenSet ? '' : 'disabled'} onclick="act('sendDigest',{},'${js(t('Digest sent'))}')">${ic('bell')}${t('Send digest now')}</button>` : ''}`) +
    `<div class="row"><div class="col1"><section class="card"><h2 class="h3">${t('Connection')}</h2>
      ${s.tokenSet ? `<div class="okbox" style="margin-top:12px">${ic('check')}<span>${t('Connected to {c}', { c: `<bdi dir="ltr">${esc(s.telegramChannel)}</bdi>` })}</span></div>` : `<div class="warnbox" style="margin-top:12px">${ic('alert')}<span>${t('Not connected.')}</span></div>`}
      ${mg ? `<div class="fgrid">${fld('tg_c', t('Channel'), inp('tg_c', s.telegramChannel, 'dir="ltr" placeholder="@channel or -100…"'), 1, 'full')}${fld('tg_t', t('Bot token'), `<input class="in" id="tg_t" type="password" dir="ltr" autocomplete="off" placeholder="${s.tokenSet ? t('Saved — type to replace') : '123456789:AA…'}">`, !s.tokenSet, 'full')}</div>
@@ -492,33 +726,36 @@ function telegramPage() {
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">${s.tokenSet ? `<button class="btn btn-r" onclick="confirmBox('${js(t('Disconnect Telegram'))}','${js(t('Stop posting alerts to the channel?'))}','${js(t('Disconnect'))}',()=>act('tgDisconnect',{},'${js(t('Disconnected'))}'),true)">${t('Disconnect')}</button>` : ''}<button class="btn btn-y" onclick="act('tgConnect',{channel:val('tg_c'),token:val('tg_t')},'${js(t('Connected — a test message was posted'))}')">${t('Connect and test')}</button></div>` : ''}
      ${s.cronUrl ? `<div class="dv"></div><div class="lbl">${t('Wake-up link for the daily digest')}</div><div class="sm mut">${t('On the free plan, call this link every 15 minutes from a free scheduler such as cron-job.org.')}</div><div class="note" style="margin-top:8px;overflow-wrap:anywhere" dir="ltr">${esc(s.cronUrl)}</div>` : ''}</section></div>
     <div class="col2"><section class="card"><h2 class="h3">${t('Latest posts')}</h2>${D.tgFeed.map(m => `<div class="task"><div style="flex:1 1 300px;white-space:pre-line">${esc(String(m.text || '').replace(/<[^>]+>/g, ''))}</div><div class="sm ${m.sent ? 'mut' : 'late'}" style="text-align:end">${FD(m.at)}<div>${m.sent ? t('Sent') : esc(m.error || t('Not sent'))}</div></div></div>`).join('') || `<div class="empty">${t('Nothing posted yet.')}</div>`}</section>
-     <section class="card"><h2 class="h3">${t('Daily digests')}</h2>${D.alerts.map(a => `<div class="task"><div style="flex:1">${t('{n} cheques due', { n: a.count })} · <span class="mut">${esc(a.by || t('automatic'))}</span></div><div class="sm ${a.sent ? 'mut' : 'late'}">${FD(a.at)} · ${a.sent ? t('Sent') : esc(a.error || t('Not sent'))}</div></div>`).join('') || `<div class="empty">${t('No digest yet.')}</div>`}</section></div></div>`;
+     <section class="card"><h2 class="h3">${t('Daily digests')}</h2>${D.alerts.map(a => `<div class="task"><div style="flex:1">${a.count === 1 ? t('1 item to follow up') : t('{n} items to follow up', { n: a.count })} · <span class="mut">${esc(a.by && a.by !== 'System' ? byN(a.by) : t('automatic'))}</span></div><div class="sm ${a.sent ? 'mut' : 'late'}">${FD(a.at)} · ${a.sent ? t('Sent') : esc(a.error || t('Not sent'))}</div></div>`).join('') || `<div class="empty">${t('No digest yet.')}</div>`}</section></div></div>`;
 }
 
 /* =================== AUDIT =================== */
 function auditPage() {
-  if (!can.audit()) return denied();
+  if (!has('audit')) return denied();
   const f = F('aud', { x: '' }), q = f.q.trim().toLowerCase();
   let L = D.audit.filter(a => (!f.x || a.user === f.x) && (!q || (a.action + ' ' + a.entity + ' ' + a.details).toLowerCase().includes(q)) && inRange(f, (a.at || '').slice(0, 10)));
   S.audRows = L;
   const p = pageOf('aud', L), users = [...new Set(D.audit.map(a => a.user))].sort();
   return phead(t('Audit log'), t('Every change, who made it and when. It cannot be edited.'), `<button class="btn btn-o" onclick="csv('audit-log',['When','User','Action','Record','Details'],S.audRows.map(a=>[fd(a.at),a.user,a.action,a.entity,a.details]))">${ic('dl')}${t('Export to Excel')}</button>`) +
-   `<div class="card flat"><div class="fbar">${searchBox('aud', t('Action, record or details'))}<select class="in" onchange="setF('aud','x',this.value)"><option value="">${t('All users')}</option>${users.map(u => `<option ${u === f.x ? 'selected' : ''}>${esc(u)}</option>`).join('')}</select>
+   `<div class="card flat"><div class="fbar">${searchBox('aud', t('Action, record or details'))}<select class="in" onchange="setF('aud','x',this.value)"><option value="">${t('All users')}</option>${users.map(u => `<option value="${esc(u)}" ${u === f.x ? 'selected' : ''}>${esc(byN(u))}</option>`).join('')}</select>
     ${dFilter('aud', 'from', t('From'), f.from)}${dFilter('aud', 'to', t('to'), f.to)}</div>
-    ${tbl([t('When'), t('User'), t('Action'), t('Record'), t('Details')], p.rows.map(a => [`<span style="white-space:nowrap">${FD(a.at)}</span>`, esc(a.user), `<b>${esc(t(a.action))}</b>`, `<bdi dir="ltr">${esc(a.entity)}</bdi>`, `<span class="sm">${esc(a.details)}</span>`]), t('No entries.'), 'cards')}${pager('aud', p)}</div>`;
+    ${tbl([t('When'), t('User'), t('Action'), t('Record'), t('Details')], p.rows.map(a => [`<span style="white-space:nowrap">${FD(a.at)}</span>`, esc(byN(a.user)), `<b>${esc(t(a.action))}</b>`, `<bdi dir="ltr">${esc(a.entity)}</bdi>`, `<span class="sm">${esc(a.details)}</span>`]), t('No entries.'), 'cards')}${pager('aud', p)}</div>`;
 }
 
 /* =================== GO-LIVE CHECKLIST =================== */
 function checklistPage() {
-  if (!can.checklist()) return denied();
+  if (!has('checklist')) return denied();
   const s = D.settings, U_ = D.users.filter(u => u.active);
+  const withRight = (page, op) => U_.filter(u => RK(u.role) && ((RK(u.role).perms || {})[page] || []).includes(op));
   const missingAcc = D.entities.flatMap(e => CURS.filter(c => c === e.funcCur || c === 'USD').filter(c => !D.accounts.some(a => a.active && a.entityId === e.id && a.currency === c)).map(c => `${nm(e)} · ${c}`));
   const items = [
     [U_.some(u => u.role === 'CFO'), t('An active CFO'), '#/users'],
-    [U_.some(u => u.role === 'ADMIN'), t('A System Admin (until then the CFO acts as admin)'), '#/users'],
-    [U_.some(u => u.role === 'FIN'), t('At least one Finance user'), '#/users'],
-    [U_.filter(u => u.role === 'FIN').length >= 2, t('Two Finance users, so one can issue what the other requested'), '#/users'],
-    [U_.some(u => u.role === 'TOP'), t('Top Management user for second approvals'), '#/users'],
+    [!!D.anyAdmin, t('A System Admin (until then the CFO acts as admin)'), '#/users'],
+    [withRight('issue', 'issue').length >= 1, t('At least one user who can issue cheques'), '#/users'],
+    [withRight('issue', 'issue').length >= 2, t('Two users who can issue cheques, so one can issue what the other requested'), '#/users'],
+    [withRight('approvals', 'approve2').length >= 1, t('A user who can give second approvals'), '#/users'],
+    [withRight('rates', 'create').length >= 1, t('A user who can enter exchange rates'), '#/users'],
+    [D.users.length && !U_.some(u => !u.fullNameAr), t('Every active user has an Arabic name'), '#/users'],
     [D.users.length && !U_.some(u => !u.email), t('Every active user has an email'), '#/users'],
     [s.mailReady, t('Email set up for password reset'), '#/settings'],
     [s.funcConfirmed, t('Functional currencies confirmed'), '#/entities'],
@@ -536,8 +773,8 @@ function checklistPage() {
 /* =================== PROFILE =================== */
 function profilePage() {
   const u = S.user, me = D.users.find(x => x.id === u.id) || {};
-  return phead(t('My profile'), '') + `<div class="row"><section class="card col1" style="max-width:560px"><div style="display:flex;gap:14px;align-items:center"><div class="av" style="width:56px;height:56px;font-size:22px">${esc((u.fullName || '?')[0])}</div><div><div class="h3">${esc(u.fullName)}</div><div class="mut"><bdi dir="ltr">${esc(u.username)}</bdi></div></div></div>
-   <div class="pairs">${pair(t('Role'), `<span class="chip role">${t(ROLES[u.role] || u.role)}</span>`)}${pair(t('Department'), esc(nm(Dp(u.deptId))))}${pair(t('Email'), u.email ? `<bdi dir="ltr">${esc(u.email)}</bdi>` : `<span class="late">${t('Missing — ask the System Admin')}</span>`)}${pair(t('Two-step verification'), me.twoFa ? t('On') : t('Off'))}</div>
+  return phead(t('My profile'), '') + `<div class="row"><section class="card col1" style="max-width:560px"><div style="display:flex;gap:14px;align-items:center"><div class="av" style="width:56px;height:56px;font-size:22px">${esc((un(u) || '?')[0])}</div><div><div class="h3">${esc(un(u))}</div>${LANG === 'ar' ? (u.fullName && u.fullNameAr ? `<div class="sm mut" dir="ltr">${esc(u.fullName)}</div>` : '') : (u.fullNameAr ? `<div class="sm mut" dir="rtl">${esc(u.fullNameAr)}</div>` : '')}<div class="mut"><bdi dir="ltr">${esc(u.username)}</bdi></div></div></div>
+   <div class="pairs">${pair(t('Role'), `<span class="chip role">${esc(roleName(u.role))}</span>`)}${pair(t('Department'), esc(nm(Dp(u.deptId))))}${pair(t('Cheques I can see'), esc(scopeName(u.scope)))}${pair(t('Email'), u.email ? `<bdi dir="ltr">${esc(u.email)}</bdi>` : `<span class="late">${t('Missing — ask the System Admin')}</span>`)}${pair(t('Two-step verification'), me.twoFa ? t('On') : t('Off'))}</div>
    <div class="dv"></div><div class="lbl">${t('Language')}</div><div class="seg">${[['ar', 'العربية'], ['en', 'English']].map(([k, l]) => `<label class="${LANG === k ? 'on' : ''}"><input type="radio" name="pl" ${LANG === k ? 'checked' : ''} onchange="if(LANG!=='${k}')switchLang()"> ${l}</label>`).join('')}</div>
    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:20px"><a class="btn btn-y" href="#/password">${ic('key')}${t('Change password')}</a><button class="btn btn-o" onclick="logout()">${ic('logout')}${t('Sign out')}</button></div></section></div>`;
 }

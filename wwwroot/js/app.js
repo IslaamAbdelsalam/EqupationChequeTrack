@@ -104,7 +104,7 @@ const IC = {
   logout: '<path d="M15 4h4v16h-4"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>', key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
   print: '<path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="8" rx="2"/><path d="M7 14h10v7H7z"/>',
-  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', db: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>', trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 20a2 2 0 0 0 4 0"/>', shield: '<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/>'
 };
 function ic(n) { return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${IC[n] || ''}</svg>`; }
@@ -142,25 +142,32 @@ async function act(action, data, okMsg, opt) {
 /* ---------- lookups ---------- */
 const B = id => (D.beneficiaries.find(x => x.id === id) || { nameEn: '—', type: '' });
 const E = id => (D.entities.find(x => x.id === id) || { nameEn: '—', funcCur: 'SDG' });
-const U = id => (D.users.find(x => x.id === id) || { fullName: '—' });
+const U = id => (D.users.find(x => x.id === id) || { fullName: '—', fullNameAr: '' });
 const Dp = id => (D.departments.find(x => x.id === id) || { nameEn: '—' });
 const AC = id => D.accounts.find(x => x.id === id);
 const BK = id => D.banks.find(x => x.id === id);
 const K = op => D.contracts.find(x => x.opNo === op);
 const R = () => S.user.role;
+/** A user's name in the reader's language (English name when no Arabic one is saved). */
+function un(u) { if (!u) return '—'; return LANG === 'ar' && u.fullNameAr ? u.fullNameAr : (u.fullName || u.fullNameAr || '—'); }
+const UN = id => un(U(id));
+/** Names saved on records ("approved by …") are English names: show the reader's language when the user is known. */
+function byN(name) { if (!name || !D) return name || ''; const u = D.users.find(x => x.fullName === name); return u ? un(u) : name; }
+const RK = k => (D && D.roles ? D.roles.find(r => r.key === k) : null);
+function roleName(k) { const r = RK(k); return r ? nm(r) : t(ROLES[k] || k || '—'); }
 function acctName(a) { if (!a) return '—'; const b = BK(a.bankId); return `${nm(b)} ••${a.last4} · ${a.currency}`; }
 
-/* ---------- roles: the same rules the server enforces ---------- */
-const ROLES = { USER: 'Department User', FIN: 'Finance', CFO: 'CFO', TOP: 'Top Management', ADMIN: 'System Admin', AUDIT: 'Auditor' };
+/* ---------- access: the role's rights (Roles & permissions), the same ones the server checks ---------- */
+const ROLES = { USER: 'Department User', FIN: 'Finance', CFO: 'CFO', TOP: 'Top Management', ADMIN: 'System Admin', AUDIT: 'Auditor' }; // built-in role names
+/** has('contracts') = may open the page; has('contracts','edit') = may change its records. */
+function has(page, op) { const p = (S.user && S.user.perms) || {}; return !!(p[page] && p[page].includes(op || 'view')); }
 const can = {
-  request: () => ['USER', 'FIN', 'CFO', 'TOP'].includes(R()),
-  seeAll: () => R() !== 'USER',
-  approve: () => R() === 'CFO', approve2: () => R() === 'TOP',
-  issue: () => R() === 'FIN', clear: () => ['FIN', 'CFO'].includes(R()),
-  fin: () => R() === 'FIN', banking: () => R() === 'CFO', void: () => ['FIN', 'CFO'].includes(R()),
-  admin: () => !!(D && D.me.isAdmin), audit: () => !!(D && (D.me.isAdmin || R() === 'AUDIT')),
-  telegram: () => !!(D && (D.me.isAdmin || R() === 'CFO')), checklist: () => !!(D && (D.me.isAdmin || R() === 'CFO'))
+  request: () => has('requests', 'create'),
+  approve: () => has('approvals', 'approve'), approve2: () => has('approvals', 'approve2'),
+  issue: () => has('issue', 'issue'), clear: () => has('followup', 'clear'), settle: () => has('followup', 'settle')
 };
+/** Contract data reaches roles that open the contracts register or the reports. */
+const seesContracts = () => has('contracts') || has('reports');
 
 /* ---------- cheque stages ---------- */
 const STAGES = {
@@ -279,31 +286,47 @@ function menu() {
   const items = [];
   items.push({ id: 'home', ic: 'home', label: t('Home'), cnt: tasks.length });
   if (can.request()) items.push({ id: 'new', ic: 'plus', label: t('New request') });
-  items.push({ h: t('Operations') });
-  const ch = [];
-  if (can.request()) ch.push({ id: 'mine', label: t('My requests'), cnt: cnt(x => x.mine) });
-  if (can.seeAll()) ch.push({ id: 'cheques', label: t('All cheques') });
-  if (can.approve() || can.approve2()) ch.push({ id: 'approvals', label: t('Approvals'), cnt: cnt(x => x.kind === 'approve') });
-  if (can.issue()) ch.push({ id: 'issue', label: t('Issue cheques'), cnt: cnt(x => x.kind === 'issue') });
-  if (can.seeAll()) ch.push({ id: 'followup', label: t('Due & follow-up'), cnt: cnt(x => x.kind === 'clear' || x.kind === 'settle') });
+  const ch = [], fin = [];
+  if (has('requests')) ch.push({ id: 'mine', label: t('My requests'), cnt: cnt(x => x.mine) });
+  if (has('cheques')) ch.push({ id: 'cheques', label: S.user.scope === 'all' ? t('All cheques') : S.user.scope === 'dept' ? t('Department cheques') : t('Cheques') });
+  if (has('approvals')) ch.push({ id: 'approvals', label: t('Approvals'), cnt: cnt(x => x.kind === 'approve') });
+  if (has('issue')) ch.push({ id: 'issue', label: t('Issue cheques'), cnt: cnt(x => x.kind === 'issue') });
+  if (has('followup')) ch.push({ id: 'followup', label: t('Due & follow-up'), cnt: cnt(x => x.kind === 'clear' || x.kind === 'settle') });
+  if (has('contracts')) fin.push({ id: 'contracts', label: t('Contracts register'), cnt: cnt(x => x.kind === 'contract') });
+  if (has('poa')) fin.push({ id: 'poa', label: t('Payments on account'), cnt: cnt(x => x.kind === 'poa') });
+  if (ch.length || fin.length || has('rates')) items.push({ h: t('Operations') });
   items.push({ g: 'cheques', ic: 'cheque', label: t('Cheques'), items: ch });
-  if (can.seeAll()) items.push({ g: 'fin', ic: 'contract', label: t('Financing'), items: [{ id: 'contracts', label: t('Contracts register') }, { id: 'poa', label: t('Payments on account'), cnt: cnt(x => x.kind === 'poa') }] });
-  items.push({ id: 'rates', ic: 'rates', label: t('Exchange rates'), cnt: cnt(x => x.kind === 'rate') });
-  if (can.seeAll()) items.push({ h: t('Finance') });
-  if (can.seeAll()) items.push({ g: 'acc', ic: 'chart', label: t('Accounting & reports'), items: [{ id: 'reports', label: t('Reports') }, { id: 'entries', label: t('Journal entries') }] });
-  if (can.seeAll()) items.push({ g: 'bank', ic: 'bank', label: t('Banking'), items: [{ id: 'banks', label: t('Banks & accounts') }, { id: 'books', label: t('Chequebooks') }, { id: 'voided', label: t('Voided numbers') }] });
-  const st = [];
-  if (can.seeAll()) st.push({ id: 'beneficiaries', label: t('Beneficiaries') });
-  if (can.admin()) st.push({ id: 'users', label: t('Users') }, { id: 'departments', label: t('Departments') }, { id: 'entities', label: t('Entities') }, { id: 'settings', label: t('Settings') });
-  if (can.seeAll() && !D.settings.hideTelegram) st.push({ id: 'telegram', label: t('Telegram alerts') });
-  if (can.audit()) st.push({ id: 'audit', label: t('Audit log') });
-  if (can.checklist()) st.push({ id: 'checklist', label: t('Go-live checklist') });
-  if (st.length) items.push({ h: t('Administration') });
-  if (st.length) items.push({ g: 'setup', ic: 'setup', label: t('Setup'), items: st });
+  items.push({ g: 'fin', ic: 'contract', label: t('Financing'), items: fin });
+  if (has('rates')) items.push({ id: 'rates', ic: 'rates', label: t('Exchange rates'), cnt: cnt(x => x.kind === 'rate') });
+  const acc = [], bank = [];
+  if (has('reports')) acc.push({ id: 'reports', label: t('Reports') });
+  if (has('entries')) acc.push({ id: 'entries', label: t('Journal entries') });
+  if (has('banks')) bank.push({ id: 'banks', label: t('Banks & accounts') });
+  if (has('books')) bank.push({ id: 'books', label: t('Chequebooks') });
+  if (has('voided')) bank.push({ id: 'voided', label: t('Voided numbers') });
+  if (acc.length || bank.length) items.push({ h: t('Finance') });
+  items.push({ g: 'acc', ic: 'chart', label: t('Accounting & reports'), items: acc });
+  items.push({ g: 'bank', ic: 'bank', label: t('Banking'), items: bank });
+  const um = [], md = [], sy = [];
+  if (has('users')) um.push({ id: 'users', label: t('User accounts') });
+  if (has('roles')) um.push({ id: 'roles', label: t('Roles & permissions') });
+  if (has('departments')) um.push({ id: 'departments', label: t('Departments') });
+  if (has('security')) um.push({ id: 'security', label: t('Sign-in & passwords') });
+  if (has('beneficiaries')) md.push({ id: 'beneficiaries', label: t('Beneficiaries') });
+  if (has('entities')) md.push({ id: 'entities', label: t('Entities') });
+  if (has('settings')) sy.push({ id: 'settings', label: t('Settings') });
+  if (has('telegram') && !D.settings.hideTelegram) sy.push({ id: 'telegram', label: t('Telegram alerts') });
+  if (has('audit')) sy.push({ id: 'audit', label: t('Audit log') });
+  if (has('checklist')) sy.push({ id: 'checklist', label: t('Go-live checklist') });
+  if (um.length || md.length || sy.length) items.push({ h: t('Administration') });
+  items.push({ g: 'users', ic: 'users', label: t('User management'), items: um });
+  items.push({ g: 'data', ic: 'db', label: t('Master data'), items: md });
+  items.push({ g: 'setup', ic: 'setup', label: t('System'), items: sy });
   return items;
 }
 function toggleGrp(g) { S.open[g] = !isOpen(g); try { localStorage.setItem('ct.open', JSON.stringify(S.open)); } catch (e) { } render(); }
-function isOpen(g) { const m = menu().find(x => x.g === g); const active = m && m.items.some(i => i.id === S.page || (S.page === 'cheque' && i.id === 'cheques')); return S.open[g] === undefined ? active : (S.open[g] || active); }
+const PARENT = { cheque: 'cheques', role: 'roles' };
+function isOpen(g) { const m = menu().find(x => x.g === g); const active = m && m.items.some(i => i.id === S.page || PARENT[S.page] === i.id); return S.open[g] === undefined ? active : (S.open[g] || active); }
 function cntB(n) { return n ? `<span class="cnt">${n}</span>` : ''; }
 function sideHtml() {
   const m = menu();
@@ -313,8 +336,8 @@ function sideHtml() {
      <button class="mtog" aria-label="${t('Menu')}" onclick="toggleMenu()"><svg class="ic mc" viewBox="0 0 24 24" aria-hidden="true"><path d="m11 7-5 5 5 5"/><path d="m18 7-5 5 5 5"/></svg><svg class="ic mx" viewBox="0 0 24 24" aria-hidden="true">${IC.x}</svg></button></div>
    <nav class="mnav">
    ${m.map(i => i.h ? `<div class="mhead">${esc(i.h)}</div>` : i.g ? (i.items.length ? `<div class="grp ${isOpen(i.g) ? 'open' : ''}">
-      <button class="nav ${i.items.some(x => x.id === S.page) ? 'has-on' : ''}" aria-expanded="${isOpen(i.g)}" onclick="toggleGrp('${i.g}')">${ic(i.ic)}${esc(i.label)}${cntB(i.items.reduce((s, x) => s + (x.cnt || 0), 0) && !isOpen(i.g) ? i.items.reduce((s, x) => s + (x.cnt || 0), 0) : 0)}<svg class="ic chev" viewBox="0 0 24 24" aria-hidden="true">${IC.down}</svg></button>
-      <div class="subs">${i.items.map(x => `<a class="sub ${S.page === x.id ? 'on' : ''}" href="#/${x.id}" ${S.page === x.id ? 'aria-current="page"' : ''}>${esc(x.label)}${cntB(x.cnt)}</a>`).join('')}</div></div>` : '')
+      <button class="nav ${i.items.some(x => x.id === S.page || PARENT[S.page] === x.id) ? 'has-on' : ''}" aria-expanded="${isOpen(i.g)}" onclick="toggleGrp('${i.g}')">${ic(i.ic)}${esc(i.label)}${cntB(i.items.reduce((s, x) => s + (x.cnt || 0), 0) && !isOpen(i.g) ? i.items.reduce((s, x) => s + (x.cnt || 0), 0) : 0)}<svg class="ic chev" viewBox="0 0 24 24" aria-hidden="true">${IC.down}</svg></button>
+      <div class="subs">${i.items.map(x => `<a class="sub ${S.page === x.id || PARENT[S.page] === x.id ? 'on' : ''}" href="#/${x.id}" ${S.page === x.id ? 'aria-current="page"' : ''}>${esc(x.label)}${cntB(x.cnt)}</a>`).join('')}</div></div>` : '')
       : `<a class="nav ${S.page === i.id ? 'on' : ''}" href="#/${i.id}" ${S.page === i.id ? 'aria-current="page"' : ''}>${ic(i.ic)}${esc(i.label)}${cntB(i.cnt)}</a>`).join('')}
    <div class="mhead">${t('Account')}</div>
    <a class="nav ${S.page === 'profile' ? 'on' : ''}" href="#/profile">${ic('key')}${t('My profile')}</a>
@@ -328,7 +351,7 @@ function topHtml() {
    <div class="srch">${ic('search')}<input class="in" id="gq" type="search" placeholder="${t('Search by reference, beneficiary or cheque no.')}" aria-label="${t('Search cheques')}" oninput="gsearch(this.value)" onblur="setTimeout(()=>{const r=document.getElementById('gres');if(r)r.innerHTML=''},200)"><div id="gres"></div></div>
    <div class="sp"></div>
    <button class="btn btn-o btn-sm" onclick="switchLang()" ${LANG === 'ar' ? 'lang="en"' : 'lang="ar"'}>${ic('globe')}${LANG === 'ar' ? 'English' : 'العربية'}</button>
-   <a class="who" href="#/profile" style="text-decoration:none;color:inherit"><div class="nm" style="text-align:end"><div class="b">${esc(u.fullName)}</div><div class="sm mut">${t(ROLES[u.role] || u.role)}</div></div><div class="av">${esc((u.fullName || '?').trim()[0] || '?')}</div></a>
+   <a class="who" href="#/profile" style="text-decoration:none;color:inherit"><div class="nm" style="text-align:end"><div class="b">${esc(un(u))}</div><div class="sm mut">${esc(roleName(u.role))}</div></div><div class="av">${esc((un(u) || '?').trim()[0] || '?')}</div></a>
   </header>`;
 }
 function gsearch(q) {
@@ -341,19 +364,39 @@ function gsearch(q) {
 /* ---------- the waiting-for-you list (also drives the menu counters) ---------- */
 function myTasks() {
   if (!D) return [];
-  const me = S.user.id, r = R(), out = [];
+  const me = S.user.id, out = [];
   for (const c of D.cheques) {
-    if (r === 'CFO' && c.status === 'Pending' && c.requesterId !== me) out.push({ c, kind: 'approve', act: t('Review') });
-    if (r === 'TOP' && c.status === 'Pending2' && c.requesterId !== me && !(c.appr && c.appr.byId === me)) out.push({ c, kind: 'approve', act: t('Review') });
-    if (r === 'FIN' && c.status === 'Approved' && c.requesterId !== me) out.push({ c, kind: 'issue', act: t('Issue') });
+    if (can.approve() && c.status === 'Pending' && c.requesterId !== me) out.push({ c, kind: 'approve', act: t('Review') });
+    if (can.approve2() && c.status === 'Pending2' && c.requesterId !== me && !(c.appr && c.appr.byId === me)) out.push({ c, kind: 'approve', act: t('Review') });
+    if (can.issue() && c.status === 'Approved' && c.requesterId !== me) out.push({ c, kind: 'issue', act: t('Issue') });
     if (can.clear() && c.status === 'Delivered' && daysUntil(c.dueDate) <= 0 && !(c.issue && c.issue.byId === me)) out.push({ c, kind: 'clear', act: t('Clear or return') });
-    if (can.clear() && c.status === 'Returned') out.push({ c, kind: 'settle', act: t('Settle') });
-    if (r === 'FIN' && c.opType === 'Payment on account' && !c.poa && ['Posted', 'Received', 'Delivered', 'Cleared'].includes(c.status) && daysUntil(c.poaSettleDate) <= 7) out.push({ c, kind: 'poa', act: t('Settle') });
+    if (can.settle() && c.status === 'Returned') out.push({ c, kind: 'settle', act: t('Settle') });
+    if (has('poa', 'settle') && c.opType === 'Payment on account' && !c.poa && ['Posted', 'Received', 'Delivered', 'Cleared'].includes(c.status) && daysUntil(c.poaSettleDate) <= 7) out.push({ c, kind: 'poa', act: t('Settle') });
     if (c.requesterId === me && c.status === 'Posted') out.push({ c, kind: 'recv', mine: true, act: t('I received it') });
     if (c.requesterId === me && c.status === 'Received') out.push({ c, kind: 'deliv', mine: true, act: t('Confirm delivery') });
   }
-  if (r === 'FIN' && !D.rates.some(x => x.date === today())) out.unshift({ c: null, kind: 'rate', act: t('Enter rate') });
+  // contracts: the owner follows them up; without an owner, whoever may follow up contracts
+  if (has('contracts')) for (const k of D.contracts) {
+    const st = kState(k);
+    if (st.closed || !st.attention) continue;
+    if (k.ownerId ? k.ownerId === me : has('contracts', 'follow')) out.push({ c: null, k, kind: 'contract', act: t('Follow up') });
+  }
+  if (has('rates', 'create') && !D.rates.some(x => x.date === today())) out.unshift({ c: null, kind: 'rate', act: t('Enter rate') });
   return out;
+}
+/** Where a contract stands: expired, inside its reminder period, follow-up due, closed. */
+function kExp(k) { return k.expiryDate || k.endDate; }
+function kState(k) {
+  const closed = k.status === 'Closed', n = daysUntil(kExp(k)), nd = k.noticeDays || 30;
+  const expired = !closed && n < 0, soon = !closed && n >= 0 && n <= nd, due = !closed && !!k.followUpDate && daysUntil(k.followUpDate) <= 0;
+  return { closed, expired, soon, due, n, attention: expired || soon || due };
+}
+function kChip(k) {
+  const s = kState(k);
+  if (s.closed) return `<span class="chip c-can">${t('Closed')}</span>`;
+  if (s.expired) return `<span class="chip c-ret">${t('Expired {n} days ago', { n: -s.n })}</span>`;
+  if (s.soon) return `<span class="chip c-pend">${s.n === 0 ? t('Expires today') : t('Expires in {n} days', { n: s.n })}</span>`;
+  return `<span class="chip c-clr">${t('Active')}</span>`;
 }
 
 /* ---------- shell ---------- */
@@ -376,7 +419,7 @@ function pageView() {
     home: homePage, new: newRequestPage, mine: minePage, cheques: chequesPage, approvals: approvalsPage, issue: issuePage, followup: followupPage,
     cheque: chequePage, rates: ratesPage, contracts: contractsPage, poa: poaPage, entries: entriesPage, reports: reportsPage,
     banks: banksPage, books: booksPage, voided: voidedPage, beneficiaries: bensPage, entities: entitiesPage, departments: deptsPage,
-    users: usersPage, settings: settingsPage, telegram: telegramPage, audit: auditPage, checklist: checklistPage, profile: profilePage, password: () => `<div class="card" style="max-width:520px">${passwordForm(false)}</div>`
+    users: usersPage, roles: rolesPage, role: rolePage, security: securityPage, settings: settingsPage, telegram: telegramPage, audit: auditPage, checklist: checklistPage, profile: profilePage, password: () => `<div class="card" style="max-width:520px">${passwordForm(false)}</div>`
   };
   const fn = P[S.page] || homePage;
   return fn(S.arg);
@@ -462,7 +505,7 @@ function resetView() {
   const i = S.resetInfo;
   let inner = `<div class="empty">${t('Loading…')}</div>`;
   if (!i.loading && !i.ok) inner = `<h1>${t('Link not valid')}</h1><div class="errbox">${ic('alert')}<span>${esc(tErr(i.error || ''))}</span></div><div style="margin-top:16px"><button class="btn btn-y" onclick="S.resetToken=null;S.auth='forgot';render()">${t('Ask for a new link')}</button></div>`;
-  if (i.ok) inner = `<h1>${t('Set a new password')}</h1><div class="mut">${t('Hello {n}, choose a new password for ChequeTrack.', { n: esc(i.name || '') })}</div>
+  if (i.ok) inner = `<h1>${t('Set a new password')}</h1><div class="mut">${t('Hello {n}, choose a new password for ChequeTrack.', { n: esc((LANG === 'ar' && i.nameAr) || i.name || '') })}</div>
    <form onsubmit="doReset(event)"><div id="l_err"></div>
     <div><label class="lbl" for="r_1">${t('New password')}</label><input class="in" id="r_1" type="password" autocomplete="new-password" required oninput="polHint('r_1','r_h')"><div class="pol" id="r_h"></div></div>
     <div><label class="lbl" for="r_2">${t('Confirm new password')}</label><input class="in" id="r_2" type="password" autocomplete="new-password" required></div>
@@ -486,7 +529,8 @@ function setupView() {
    <div class="mut">${reset ? t('The CFO account was reset from Azure. Departments, users, cheques and settings are kept.') : t('Create the CFO account. The CFO can then add the other users.')}</div>
    <form onsubmit="doSetup(event)"><div id="l_err"></div>
     ${reset ? '' : `<div><label class="lbl" for="s_c">${t('Company name')}</label><input class="in" id="s_c" value="Equpation" required></div>`}
-    <div><label class="lbl" for="s_n">${t('Full name')}</label><input class="in" id="s_n" required></div>
+    <div><label class="lbl" for="s_n">${t('Full name (English)')}</label><input class="in" id="s_n" dir="ltr" required></div>
+    <div><label class="lbl" for="s_na">${t('Full name (Arabic)')}</label><input class="in" id="s_na" dir="rtl"></div>
     <div><label class="lbl" for="s_u">${t('Username')}</label><input class="in" id="s_u" dir="ltr" required></div>
     <div><label class="lbl" for="s_e">${t('Email')}</label><input class="in" id="s_e" type="email" dir="ltr" required></div>
     <div><label class="lbl" for="s_p">${t('Password')}</label><input class="in" id="s_p" type="password" autocomplete="new-password" required oninput="polHint('s_p','s_h')"><div class="pol" id="s_h"></div></div>
@@ -494,7 +538,7 @@ function setupView() {
 }
 async function doSetup(e) {
   e.preventDefault();
-  const j = await api('/api/setup', { company: val('s_c'), fullName: val('s_n'), username: val('s_u'), email: val('s_e'), password: document.getElementById('s_p').value, lang: LANG, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  const j = await api('/api/setup', { company: val('s_c'), fullName: val('s_n'), fullNameAr: val('s_na'), username: val('s_u'), email: val('s_e'), password: document.getElementById('s_p').value, lang: LANG, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
   if (!j.ok) { lerr(j.error); return; }
   S.setup = false; const me = await api('/api/me');
   await afterSignIn({ user: me.user, forced: me.forced, sessionMin: me.sessionMin, policy: me.policy });

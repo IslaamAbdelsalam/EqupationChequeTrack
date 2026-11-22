@@ -42,7 +42,7 @@ function hbar(items, o) {
       <rect x="${rx}" y="${y + 6}" width="${w}" height="${rowH - 16}" rx="4" fill="${it.color || o.color || CH.gold}"/>
       <text x="${X(x0 + w + 8)}" y="${y + rowH / 2 + 2}" text-anchor="${anc('start')}" style="font-weight:600">${esc(plain(it.value))}</text></g>`;
   });
-  return `<div class="chart" role="img" aria-label="${esc(o.title || '')}"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">${g}</svg></div>`;
+  return `<div class="chart" role="img" aria-label="${esc(o.title || '')}" dir="ltr"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMinYMin meet">${g}</svg></div>`;
 }
 
 /** Vertical grouped bars over categories (time runs left to right). series [{name, values, color}] */
