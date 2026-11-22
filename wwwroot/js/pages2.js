@@ -571,7 +571,18 @@ const PAGE_HINT = { requests: "Create raises a request; Delete cancels one's own
 const OP_LABEL = { view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete', approve: 'First approval', approve2: 'Second approval', issue: 'Issue cheques', clear: 'Clear / return', settle: 'Settle', follow: 'Follow up', post: 'Mark as posted', send: 'Send digest' };
 const GROUPS = [['ops', 'Operations'], ['fin', 'Finance'], ['users', 'User management'], ['data', 'Master data'], ['system', 'System']];
 const CRUD = ['view', 'create', 'edit', 'delete'];
-function opShort(op) { return { view: LANG === 'ar' ? 'ع' : 'V', create: LANG === 'ar' ? 'إ' : 'C', edit: LANG === 'ar' ? 'ت' : 'E', delete: LANG === 'ar' ? 'ح' : 'D' }[op] || '★'; }
+const OP_ICON = { view: 'eye', create: 'plus', edit: 'edit', delete: 'trash' };
+const OP_HELP = { view: 'opens the page', create: 'adds new records', edit: 'changes records', delete: 'removes or cancels' };
+/** The key shown above the access matrix: each symbol with its name and what it allows. */
+function mxKey() {
+  const item = (icon, name, help) => `<div class="mxk"><span class="mxi ${icon === 'check' ? 'ok' : ''}">${icon ? ic(icon) : '<span class="mxdash">—</span>'}</span><span><b>${t(name)}</b><span class="mut"> · ${t(help)}</span></span></div>`;
+  return `<div class="mxkey" role="note"><div class="mxkh">${ic('info')}${t('Key')}</div><div class="mxkl">${CRUD.map(o => item(OP_ICON[o], OP_LABEL[o], OP_HELP[o])).join('')}${item('check', 'Allowed', 'can do this step')}${item('', 'No access', 'cannot open the page')}</div></div>`;
+}
+function mxCell(c, r) {
+  const on = (r.perms || {})[c.page] || [], slots = CRUD.filter(o => c.ops.includes(o));
+  if (!slots.some(o => on.includes(o))) return `<td class="mxc"><span class="mxdash" title="${esc(t('No access'))}">—</span></td>`;
+  return `<td class="mxc">${slots.map(o => on.includes(o) ? `<span class="mxi" title="${esc(t(OP_LABEL[o]))}" aria-label="${esc(t(OP_LABEL[o]))}">${ic(OP_ICON[o])}</span>` : '').join('')}</td>`;
+}
 function rolesPage() {
   if (!has('roles')) return denied();
   const f = F('rol', { tab: 'list', dep: '' }), q = f.q.trim().toLowerCase();
@@ -584,10 +595,10 @@ function rolesPage() {
   let body;
   if (f.tab === 'matrix') {
     S.mxRoles = L;
-    body = L.length ? `<div class="sm mut" style="margin:4px 16px 10px">${t('{v} view · {c} create · {e} edit · {d} delete · ★ workflow step (hover for the name)', { v: opShort('view'), c: opShort('create'), e: opShort('edit'), d: opShort('delete') })}</div>
-      <div class="tw"><table class="tbl mx"><thead><tr><th>${t('Page')}</th>${L.map(r => `<th><a href="#/role/${r.id}">${esc(nm(r))}</a></th>`).join('')}</tr></thead><tbody>
-      ${GROUPS.map(([g, gl]) => `<tr class="mxg"><td colspan="${L.length + 1}">${t(gl)}</td></tr>` + D.permCatalog.filter(c => c.group === g).map(c => `<tr><td>${t(PAGE_LABEL[c.page] || c.page)}</td>${L.map(r => { const ops = (r.perms || {})[c.page] || [];
-        return `<td>${ops.length ? ops.map(o => `<span class="op ${CRUD.includes(o) ? '' : 'wf'}" title="${esc(t(OP_LABEL[o] || o))}">${opShort(o)}</span>`).join('') : '<span class="mut">—</span>'}</td>`; }).join('')}</tr>`).join('')).join('')}
+    body = L.length ? mxKey() + `<div class="tw"><table class="tbl mx"><thead><tr><th>${t('Page')}</th>${L.map(r => `<th><a href="#/role/${r.id}">${esc(nm(r))}</a>${r.deptId ? `<div class="sm mut">${esc(nm(Dp(r.deptId)))}</div>` : ''}</th>`).join('')}</tr></thead><tbody>
+      ${GROUPS.map(([g, gl]) => `<tr class="mxg"><td colspan="${L.length + 1}">${t(gl)}</td></tr>` + D.permCatalog.filter(c => c.group === g).map(c =>
+        `<tr><td><b>${t(PAGE_LABEL[c.page] || c.page)}</b></td>${L.map(r => mxCell(c, r)).join('')}</tr>` +
+        c.ops.filter(o => !CRUD.includes(o)).map(o => `<tr class="mxs"><td>${t(OP_LABEL[o])}</td>${L.map(r => ((r.perms || {})[c.page] || []).includes(o) ? `<td class="mxc"><span class="mxi ok" title="${esc(t('Allowed'))}" aria-label="${esc(t('Allowed'))}">${ic('check')}</span></td>` : `<td class="mxc"><span class="mxdash">—</span></td>`).join('')}</tr>`).join('')).join('')).join('')}
       </tbody></table></div>` : `<div class="empty">${t('No roles.')}</div>`;
   } else {
     body = tbl([t('Role'), t('Department'), t('Cheques it sees'), t('Rights'), { l: t('Active users'), n: 1 }, t('Last change'), ''], L.map(r => {
@@ -603,7 +614,12 @@ function rolesPage() {
 }
 function exportMatrix() {
   const L = S.mxRoles || D.roles;
-  csv('access-matrix', ['Group', 'Page', ...L.map(r => r.nameEn)], D.permCatalog.map(c => [c.group, PAGE_LABEL[c.page] || c.page, ...L.map(r => ((r.perms || {})[c.page] || []).map(o => OP_LABEL[o] || o).join(', '))]));
+  const gName = g => (GROUPS.find(x => x[0] === g) || [g, g])[1], rows = [];
+  D.permCatalog.forEach(c => {
+    rows.push([gName(c.group), PAGE_LABEL[c.page] || c.page, ...L.map(r => { const on = (r.perms || {})[c.page] || []; return CRUD.filter(o => on.includes(o)).map(o => OP_LABEL[o]).join(', ') || 'No access'; })]);
+    c.ops.filter(o => !CRUD.includes(o)).forEach(o => rows.push([gName(c.group), '   ' + OP_LABEL[o], ...L.map(r => ((r.perms || {})[c.page] || []).includes(o) ? 'Allowed' : '')]));
+  });
+  csv('access-matrix', ['Group', 'Page / workflow step', ...L.map(r => r.nameEn)], rows);
 }
 /** Role editor: the draft lives in S.rd so ticking boxes keeps what was typed. */
 function rolePage(arg) {
@@ -639,7 +655,7 @@ function rolePage(arg) {
       <div class="hint">${t('Approving, issuing and clearing apply only to the cheques the role sees.')}${wf && rd.scope === 'own' ? ` <span class="late">${t('With "Own requests only", this role cannot act on other people\'s cheques.')}</span>` : ''}</div></section>
      <section class="card col1"><h2 class="h3">${t('Users with this role')}</h2>${users.length ? users.map(u => `<div class="task"><div style="flex:1">${esc(un(u))}<div class="sm mut">${esc(nm(Dp(u.deptId)))}</div></div>${u.active ? '' : `<span class="chip c-can">${t('Disabled')}</span>`}</div>`).join('') : `<div class="empty sm">${isNew ? t('Save the role, then give it to users under User accounts.') : t('No users have this role.')}</div>`}</section></div>
      <section class="card"><div class="chead"><h2 class="h3">${t('Rights by page')}</h2>${canSave ? `<div style="display:flex;gap:8px"><button class="btn btn-o btn-sm" onclick="rdBulk('view')">${t('View everything')}</button><button class="btn btn-o btn-sm" onclick="rdBulk('none')">${t('Clear all')}</button></div>` : ''}</div>
-      <div class="tw"><table class="tbl perm cards"><thead><tr><th>${t('Page')}</th>${CRUD.map(op => `<th class="pc">${t(OP_LABEL[op])}</th>`).join('')}<th>${t('Workflow steps')}</th><th></th></tr></thead><tbody>${grid}</tbody></table></div></section>`;
+      <div class="tw"><table class="tbl perm cards"><thead><tr><th>${t('Page')}</th>${CRUD.map(op => `<th class="pc"><span class="mxi">${ic(OP_ICON[op])}</span><div>${t(OP_LABEL[op])}</div></th>`).join('')}<th>${t('Workflow steps')}</th><th></th></tr></thead><tbody>${grid}</tbody></table></div></section>`;
 }
 function rdTick(page, op, on) {
   const p = S.rd.perms, cur = new Set(p[page] || []);

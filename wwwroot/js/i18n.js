@@ -1,6 +1,14 @@
 /* Arabic text. Keys are the English text used in the screens. */
 'use strict';
 const AR = {
+"Key": "دليل الرموز",
+"opens the page": "فتح الصفحة",
+"adds new records": "إضافة سجلات جديدة",
+"changes records": "تعديل السجلات",
+"removes or cancels": "الحذف أو الإلغاء",
+"Allowed": "مسموح",
+"can do this step": "يستطيع تنفيذ هذه الخطوة",
+"cannot open the page": "لا يستطيع فتح الصفحة",
 "1 active user has no Arabic name yet, so the English name shows in Arabic screens.": "مستخدم نشط واحد بلا اسم عربي بعد، لذا يظهر اسمه الإنجليزي في الشاشات العربية.",
 "1 item to follow up": "بند واحد للمتابعة",
 "Department cheques": "شيكات الإدارة",
@@ -88,7 +96,6 @@ const AR = {
 "Roles": "الأدوار",
 "Access matrix": "مصفوفة الصلاحيات",
 "Role name": "اسم الدور",
-"{v} view · {c} create · {e} edit · {d} delete · ★ workflow step (hover for the name)": "{v} عرض · {c} إضافة · {e} تعديل · {d} حذف · ★ خطوة في سير العمل (مرّر المؤشر لمعرفة اسمها)",
 "Page": "الصفحة",
 "No roles.": "لا توجد أدوار.",
 "Cheques it sees": "الشيكات التي يراها",
