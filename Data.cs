@@ -372,6 +372,7 @@ public class AppDb : DbContext, IDataProtectionKeyContext
         b.Entity<Cheque>().HasIndex(x => x.Seq).IsUnique();
         b.Entity<Cheque>().HasIndex(x => x.Status);
         b.Entity<Cheque>().HasIndex(x => x.RequesterId);
+        b.Entity<Cheque>().HasIndex(x => x.DeptId);
         b.Entity<TgMessage>().HasIndex(x => new { x.Kind, x.Day });
         b.Entity<Contract>().HasIndex(x => x.OpNo).IsUnique();
         b.Entity<ChequeLine>().HasIndex(x => x.ChequeId);

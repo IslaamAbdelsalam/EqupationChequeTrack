@@ -121,7 +121,7 @@ async function api(path, body) {
 }
 async function loadState() {
   const j = await api('/api/state');
-  if (j && j.me) { D = j; S.user = j.me; return true; }
+  if (j && j.me) { D = j; indexD(); S.user = j.me; return true; }
   return false;
 }
 async function act(action, data, okMsg, opt) {
@@ -139,21 +139,31 @@ async function act(action, data, okMsg, opt) {
   } finally { busy = false; document.body.style.cursor = ''; }
 }
 
-/* ---------- lookups ---------- */
-const B = id => (D.beneficiaries.find(x => x.id === id) || { nameEn: '—', type: '' });
-const E = id => (D.entities.find(x => x.id === id) || { nameEn: '—', funcCur: 'SDG' });
-const U = id => (D.users.find(x => x.id === id) || { fullName: '—', fullNameAr: '' });
-const Dp = id => (D.departments.find(x => x.id === id) || { nameEn: '—' });
-const AC = id => D.accounts.find(x => x.id === id);
-const BK = id => D.banks.find(x => x.id === id);
-const K = op => D.contracts.find(x => x.opNo === op);
+/* ---------- lookups ----------
+   Speed: each list is indexed once per state load (Map by id), so a lookup no longer scans the list.
+   Pages call these for every row, so long lists render many times faster. */
+const NOBEN = { nameEn: '—', type: '' }, NOENT = { nameEn: '—', funcCur: 'SDG' }, NOUSR = { fullName: '—', fullNameAr: '' }, NODEP = { nameEn: '—' };
+function indexD() {
+  if (!D) return;
+  const by = (arr, k) => { const m = new Map(); (arr || []).forEach(x => { if (!m.has(x[k])) m.set(x[k], x); }); return m; };
+  D._ix = { ben: by(D.beneficiaries, 'id'), ent: by(D.entities, 'id'), usr: by(D.users, 'id'), usrN: by(D.users, 'fullName'), dep: by(D.departments, 'id'),
+    acc: by(D.accounts, 'id'), bank: by(D.banks, 'id'), kop: by(D.contracts, 'opNo'), role: by(D.roles, 'key'), rate: new Map() };
+}
+const IX = () => D._ix || (indexD(), D._ix);
+const B = id => IX().ben.get(id) || NOBEN;
+const E = id => IX().ent.get(id) || NOENT;
+const U = id => IX().usr.get(id) || NOUSR;
+const Dp = id => IX().dep.get(id) || NODEP;
+const AC = id => IX().acc.get(id);
+const BK = id => IX().bank.get(id);
+const K = op => IX().kop.get(op);
 const R = () => S.user.role;
 /** A user's name in the reader's language (English name when no Arabic one is saved). */
 function un(u) { if (!u) return '—'; return LANG === 'ar' && u.fullNameAr ? u.fullNameAr : (u.fullName || u.fullNameAr || '—'); }
 const UN = id => un(U(id));
 /** Names saved on records ("approved by …") are English names: show the reader's language when the user is known. */
-function byN(name) { if (!name || !D) return name || ''; const u = D.users.find(x => x.fullName === name); return u ? un(u) : name; }
-const RK = k => (D && D.roles ? D.roles.find(r => r.key === k) : null);
+function byN(name) { if (!name || !D) return name || ''; const u = IX().usrN.get(name); return u ? un(u) : name; }
+const RK = k => (D && D.roles ? IX().role.get(k) || null : null);
 function roleName(k) { const r = RK(k); return r ? nm(r) : t(ROLES[k] || k || '—'); }
 function acctName(a) { if (!a) return '—'; const b = BK(a.bankId); return `${nm(b)} ••${a.last4} · ${a.currency}`; }
 
@@ -182,7 +192,7 @@ function chip(s) { const x = STAGES[s] || [s, 'c-can']; return `<span class="chi
 
 /* ---------- money in other currencies ---------- */
 function latest() { return D.rates[0] || null; }
-function rateOn(iso) { return D.rates.find(r => r.date <= iso) || null; }
+function rateOn(iso) { const m = IX().rate; if (m.has(iso)) return m.get(iso); const r = D.rates.find(r => r.date <= iso) || null; m.set(iso, r); return r; }
 function perUsd(c, r) { return c === 'USD' ? 1 : c === 'QAR' ? +r.QAR : +r.SDG; }
 function conv(a, f, to, r) { if (f === to) return +a; if (!r) return 0; return +a / perUsd(f, r) * perUsd(to, r); }
 function snapRate(c) {
@@ -230,8 +240,13 @@ function csv(name, head, rows) {
 
 /* ---------- lists: search, filters, paging ---------- */
 function F(key, def) { return S.f[key] = S.f[key] || Object.assign({ q: '', tab: '', ent: '', cur: '', from: '', to: '', page: 1, size: 25, x: '' }, def || {}); }
+let setFT = null;
 function setF(key, prop, v, keepId) {
   const f = F(key); f[prop] = v; if (prop !== 'page') f.page = 1;
+  if (prop === 'q') { clearTimeout(setFT); setFT = setTimeout(() => setFNow(keepId), 160); return; }   // speed: redraw once typing pauses
+  setFNow(keepId);
+}
+function setFNow(keepId) {
   render();
   if (keepId) { const el = document.getElementById(keepId); if (el) { el.focus(); const n = el.value.length; try { el.setSelectionRange(n, n); } catch (e) { } } }
 }

@@ -242,11 +242,22 @@ public class SettingsStore
         _m = dp.CreateProtector("ChequeTrack.Smtp.v1");
     }
 
+    // Speed: the settings row is read on every request, so its JSON is kept in memory for 60 seconds
+    // (and replaced at once on Save). Each caller still gets its own copy, so changes never leak.
+    static string _json; static DateTime _jsonExp;
+    static readonly object _lk = new();
     public async Task<AppSettings> Get(AppDb db)
     {
-        var row = await db.Settings.AsNoTracking().FirstOrDefaultAsync(x => x.Key == "app");
-        if (row == null || string.IsNullOrWhiteSpace(row.Value)) return Fix(new AppSettings());
-        try { return Fix(JsonSerializer.Deserialize<AppSettings>(row.Value, J) ?? new AppSettings()); }
+        string json;
+        lock (_lk) json = _json != null && DateTime.UtcNow < _jsonExp ? _json : null;
+        if (json == null)
+        {
+            var row = await db.Settings.AsNoTracking().FirstOrDefaultAsync(x => x.Key == "app");
+            json = row?.Value ?? "";
+            lock (_lk) { _json = json; _jsonExp = DateTime.UtcNow.AddSeconds(60); }
+        }
+        if (string.IsNullOrWhiteSpace(json)) return Fix(new AppSettings());
+        try { return Fix(JsonSerializer.Deserialize<AppSettings>(json, J) ?? new AppSettings()); }
         catch { return Fix(new AppSettings()); }
     }
 
@@ -267,6 +278,7 @@ public class SettingsStore
         if (row == null) db.Settings.Add(new Setting { Key = "app", Value = json });
         else row.Value = json;
         await db.SaveChangesAsync();
+        lock (_lk) { _json = json; _jsonExp = DateTime.UtcNow.AddSeconds(60); }
     }
 
     public string Token(AppSettings s)

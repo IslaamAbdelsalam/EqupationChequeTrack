@@ -61,6 +61,9 @@ public static class Schema
             [Perms] nvarchar(max) NULL, [BuiltIn] bit NOT NULL, [Notes] nvarchar(300) NULL, [UpdatedBy] nvarchar(150) NULL, [UpdatedAt] nvarchar(20) NULL)",
         @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Roles_Key' AND object_id = OBJECT_ID(N'dbo.Roles'))
             CREATE UNIQUE INDEX IX_Roles_Key ON dbo.Roles([Key]) WHERE [Key] IS NOT NULL",
+        // speed: department-scoped cheque lists
+        @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Cheques_DeptId' AND object_id = OBJECT_ID(N'dbo.Cheques'))
+            CREATE INDEX IX_Cheques_DeptId ON dbo.Cheques([DeptId])",
     };
 
     // table, column, type (NOT NULL columns get a default so existing rows stay valid)
@@ -105,9 +108,11 @@ public static class Schema
     public static async Task Upgrade(AppDb db, SettingsStore ss, ILogger log)
     {
         if (!db.Database.IsSqlServer()) return;
-        foreach (var sql in Ddl) await db.Database.ExecuteSqlRawAsync(sql);
-        foreach (var (t, c, type) in Cols)
-            await db.Database.ExecuteSqlRawAsync($"IF COL_LENGTH(N'dbo.{t}', N'{c}') IS NULL ALTER TABLE dbo.[{t}] ADD [{c}] {type}");
+        // Speed (cold start): each list runs as ONE batch, so start-up needs 2 database round trips instead of ~95.
+        // Every statement is an independent, idempotent IF ... check, so batching does not change the result.
+        await db.Database.ExecuteSqlRawAsync(string.Join(";\n", Ddl));
+        await db.Database.ExecuteSqlRawAsync(string.Join(";\n", Cols.Select(x =>
+            $"IF COL_LENGTH(N'dbo.{x.t}', N'{x.c}') IS NULL ALTER TABLE dbo.[{x.t}] ADD [{x.c}] {x.type}")));
 
         // default entities (functional currency, IAS 21 para 9) — editable in Setup › Entities
         if (!await db.Entities.AnyAsync())

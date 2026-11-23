@@ -8,13 +8,24 @@ using ChequeTrack;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 var cs = builder.Configuration.GetConnectionString("ChequeDb");
 if (string.IsNullOrWhiteSpace(cs)) throw new InvalidOperationException("Connection string 'ChequeDb' is missing. Add it in Azure App Service > Environment variables > Connection strings.");
 
-builder.Services.AddDbContext<AppDb>(o => o.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(8, TimeSpan.FromSeconds(10), null)));
+builder.Services.AddDbContextPool<AppDb>(o => o.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(8, TimeSpan.FromSeconds(10), null)));
+// Speed: compress API answers and scripts (the state JSON shrinks to about a tenth)
+builder.Services.AddResponseCompression(o =>
+{
+    o.EnableForHttps = true;
+    o.Providers.Add<BrotliCompressionProvider>();
+    o.Providers.Add<GzipCompressionProvider>();
+    o.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[] { "image/svg+xml" });
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = System.IO.Compression.CompressionLevel.Fastest);
 builder.Services.AddDataProtection().PersistKeysToDbContext<AppDb>().SetApplicationName("ChequeTrack");
 builder.Services.AddSingleton<SettingsStore>();
 builder.Services.AddHttpClient("tg", c => c.Timeout = TimeSpan.FromSeconds(15));
@@ -36,6 +47,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+app.UseResponseCompression();
 
 using (var scope = app.Services.CreateScope())
 {
@@ -78,7 +90,13 @@ app.Use(async (ctx, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
-    OnPrepareResponse = c => { if (c.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) c.Context.Response.Headers["Cache-Control"] = "no-cache"; }
+    OnPrepareResponse = c =>
+    {
+        var h = c.Context.Response.Headers;
+        if (c.File.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) h["Cache-Control"] = "no-cache";
+        else if (c.Context.Request.Query.ContainsKey("v")) h["Cache-Control"] = "public,max-age=31536000,immutable"; // versioned: index.html changes ?v= on each release
+        else h["Cache-Control"] = "public,max-age=86400";
+    }
 });
 app.UseAuthentication();
 app.UseAuthorization();
@@ -408,9 +426,6 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
     var seeBooks = A.Has("books") || A.Has("voided") || A.Has("issue", "issue") || A.Has("checklist");
     var seeContracts = A.Has("contracts") || A.Has("reports");
 
-    object audit = Array.Empty<object>();
-    if (A.Has("audit")) audit = await db.Audit.AsNoTracking().OrderByDescending(a => a.Id).Take(3000)
-        .Select(a => new { at = a.At, user = a.User, action = a.Action, entity = a.Entity, details = a.Details }).ToListAsync();
 
     object tgFeed = Array.Empty<object>(), alerts = Array.Empty<object>();
     if (A.Has("telegram"))
@@ -435,7 +450,7 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
         users = uv,
         beneficiaries = await db.Beneficiaries.AsNoTracking().OrderBy(x => x.NameEn)
             .Select(x => new { id = x.Id, code = x.Code ?? "", type = x.Type, nameEn = x.NameEn, nameAr = x.NameAr, contact = x.Contact, phone = x.Phone, email = x.Email }).ToListAsync(),
-        benUse, rates, settings, cheques, audit, tgFeed, alerts, acctCurs,
+        benUse, rates, settings, cheques, tgFeed, alerts, acctCurs,
         banks = seeBanks ? banks.Select(x => (object)new { id = x.Id, nameEn = x.NameEn, nameAr = x.NameAr, currency = x.Currency, active = x.Active }).ToList() : new List<object>(),
         accounts = seeBanks ? accounts.Select(x => (object)new { id = x.Id, bankId = x.BankId, entityId = x.EntityId, description = x.Description, last4 = x.Last4, ledger = x.Ledger, active = x.Active, currency = bankCur.GetValueOrDefault(x.BankId) }).ToList() : new List<object>(),
         books = seeBooks ? (await db.Chequebooks.AsNoTracking().ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, from = x.FromNo, to = x.ToNo, active = x.Active, by = x.AddedBy, at = x.AddedAt }).ToList() : new List<object>(),
@@ -468,6 +483,23 @@ static object ChequeView(Cheque c, List<object> lines, List<object> files) => ne
 };
 
 // ---------- attachments ----------
+// Keep-awake check for an external pinger (cron-job.org every 10 min): answers without touching the database,
+// so the free-plan web app stays loaded without using Azure SQL free time.
+app.MapGet("/api/ping", () => Results.Text("ok"));
+
+// Audit log: loaded only when the Audit page is opened (it used to come with every state load).
+app.MapGet("/api/audit", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var s = await ss.Get(db);
+    if (Forced(u, s) != null) return Err("Password change required.", 403);
+    var A = await AccessOf(db, u);
+    if (!A.Has("audit")) return Err("Your role cannot open the audit log.", 403);
+    var audit = await db.Audit.AsNoTracking().OrderByDescending(a => a.Id).Take(3000)
+        .Select(a => new { at = a.At, user = a.User, action = a.Action, entity = a.Entity, details = a.Details }).ToListAsync();
+    return Ok(new { ok = true, audit });
+});
+
 app.MapGet("/api/file/{id:int}", async (int id, HttpContext ctx, AppDb db) =>
 {
     var u = await CurrentUser(ctx, db); if (u == null) return Results.StatusCode(401);

@@ -748,6 +748,11 @@ function telegramPage() {
 /* =================== AUDIT =================== */
 function auditPage() {
   if (!has('audit')) return denied();
+  // speed: the audit log is fetched only when this page opens (not with every state load)
+  if (!D.audit) {
+    if (!S.audLoading) { S.audLoading = true; api('/api/audit').then(j => { S.audLoading = false; if (D) { D.audit = (j && j.audit) || []; if (S.page === 'audit') render(); } }); }
+    return phead(t('Audit log'), t('Every change, who made it and when. It cannot be edited.'), '') + `<div class="card flat"><div class="empty">${t('Loading…')}</div></div>`;
+  }
   const f = F('aud', { x: '' }), q = f.q.trim().toLowerCase();
   let L = D.audit.filter(a => (!f.x || a.user === f.x) && (!q || (a.action + ' ' + a.entity + ' ' + a.details).toLowerCase().includes(q)) && inRange(f, (a.at || '').slice(0, 10)));
   S.audRows = L;

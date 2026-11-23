@@ -65,6 +65,18 @@ Email (for password reset and sign-in codes) is set by the System Admin in Setti
 
 On the free plan the app sleeps when idle. To make sure the daily Telegram digest is sent, add the private **Daily alert wake-up link** (Setup › Telegram alerts) to an external scheduler such as cron-job.org, set to run every 30 minutes.
 
+## Performance
+
+- **Compressed answers:** server answers and scripts are compressed (Brotli or gzip). In tests, the data loaded after each action dropped from 434 KB to 27 KB.
+- **Browser caching:** scripts are cached by the browser for a year. `index.html` raises `?v=` on each release, so a new version is still picked up at once.
+- **Audit log on demand:** the audit log (up to 3,000 rows) loads only when the Audit page opens (`/api/audit`). It no longer comes with every page load.
+- **Settings read from memory:** settings are kept in memory for 60 seconds and refreshed at once when saved, instead of being read from the database on every request.
+- **Reused database connections:** database contexts are pooled.
+- **Faster start-up:** the table and column checks run in 2 database round trips instead of about 95.
+- **New index:** cheques now have an index on department.
+- **Faster lists:** lists look records up by id instead of scanning, and search boxes redraw once typing pauses. Typing in a search box went from 12 full redraws to 1.
+- **Keep the app awake:** on the free plan the web app sleeps when idle, and the first visit after that is slow. Add `https://<app>.azurewebsites.net/api/ping` to cron-job.org every 10 minutes. It does not touch the database, so it does not use Azure SQL free time.
+
 ## Security notes
 
 - Never commit connection strings, bot tokens or passwords.

@@ -92,7 +92,7 @@ if sys.argv[1:] == ["upgrade"]:
     check("department user still sees only own cheques", us["me"]["scope"] == "own" and all(c["requesterId"] == us["me"]["id"] for c in us["cheques"]))
     aud = login("aud")
     check("auditor still cannot change", denied(aud.act("saveRate", date=st["today"], QAR=3.64, SDG=2400, source="x")))
-    check("auditor sees the audit log", len(aud.state()["audit"]) > 0)
+    check("auditor sees the audit log", len(aud.call("/api/audit").get("audit") or []) > 0)   # loaded on demand since v3.1
     k = next((k for k in st["contracts"] if k["opNo"] == "OP-1"), None)
     check("existing contract expires at the end of its term", k and k["expiryDate"] == k["endDate"] and k["status"] == "Active" and k["noticeDays"] == 30, k)
     print("\nFAILURES:", fails)
