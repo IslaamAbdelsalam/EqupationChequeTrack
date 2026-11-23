@@ -573,7 +573,47 @@ function startIdle(min) {
 }
 
 /* ---------- start ---------- */
+/* ---------- clickable rows ----------
+   Any list row (table row or task line) that has one main "open" action becomes clickable as a whole:
+   hover highlights it, a click anywhere on it (outside its own buttons/links) runs that action,
+   and Enter does the same from the keyboard. */
+const ROW_OPENERS = /^(kModal|contractModal|bankModal|accountModal|bookModal|benModal|entModal|deptModal|userModal)\(\d+\)$/;
+function rowTarget(row) {
+  // 1) the row's own open/edit window (users, banks, beneficiaries, contracts…)
+  const ops = [...row.querySelectorAll('[onclick]')].filter(e => ROW_OPENERS.test((e.getAttribute('onclick') || '').trim()));
+  if (new Set(ops.map(e => e.getAttribute('onclick').trim())).size === 1) return ops[0];
+  // 2) its main link: a cheque, or the highlighted link of the row
+  const links = [...row.querySelectorAll('a[href^="#/"]')].filter(a => !a.classList.contains('btn') || row.matches('.task'));
+  const main = links.filter(a => a.classList.contains('lnk') || a.getAttribute('href').startsWith('#/cheque/'));
+  const pick = main.length ? main : links;
+  if (new Set(pick.map(a => a.getAttribute('href'))).size === 1) return pick[0];
+  return null;
+}
+function enhanceRows(scope) {
+  (scope || document).querySelectorAll('table.tbl tbody tr:not([data-rk]), .task:not([data-rk])').forEach(row => {
+    row.dataset.rk = '1';
+    if (row.classList.contains('click') || row.classList.contains('mxg') || row.classList.contains('mxs')) return;
+    const tgt = rowTarget(row); if (!tgt) return;
+    row.classList.add('click', 'rowlink'); row.tabIndex = 0;
+    row.addEventListener('click', e => {
+      const hit = e.target.closest('a,button,input,select,textarea,label,summary,[onclick],[contenteditable]');
+      if (hit && row.contains(hit) && hit !== row) return;          // the row's own buttons/links keep working
+      if (window.getSelection && String(window.getSelection()).length > 2) return;   // allow selecting text
+      tgt.click();
+    });
+    row.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target === row) { e.preventDefault(); tgt.click(); } });
+  });
+}
+let rowObs = null;
+function watchRows() {
+  if (rowObs || !window.MutationObserver) return;
+  let q = false;
+  rowObs = new MutationObserver(() => { if (q) return; q = true; requestAnimationFrame(() => { q = false; enhanceRows(); }); });
+  ['root', 'modal'].forEach(id => { const el = document.getElementById(id); if (el) rowObs.observe(el, { childList: true, subtree: true }); });
+}
+
 async function boot() {
+  watchRows();
   let l = 'en'; try { l = localStorage.getItem('ct.lang') || ((navigator.language || '').startsWith('ar') ? 'ar' : 'en'); } catch (e) { }
   setLang(l);
   try { S.open = JSON.parse(localStorage.getItem('ct.open') || '{}') || {}; } catch (e) { S.open = {}; }

@@ -180,7 +180,11 @@ textarea.in{min-height:80px;resize:vertical}
 .tbl{width:100%;border-collapse:collapse;font-size:14.5px}
 .tbl th{text-align:start;font-size:13px;font-weight:600;color:var(--mut);padding:12px 16px;border-bottom:1px solid var(--line);white-space:nowrap;background:#FAFAFC}
 .tbl td{padding:13px 16px;border-bottom:1px solid var(--line2);vertical-align:middle}
-.tbl tr.click{cursor:pointer}.tbl tr.click:hover td{background:#FFFBF4}
+.tbl tr.click{cursor:pointer}.tbl tr.click td{transition:background-color .12s}
+.tbl tr.click:hover td{background:var(--ysoft)}.tbl tr.click:active td{background:#FFEFB8}
+.tbl tr.click:focus-visible{outline:2px solid var(--y);outline-offset:-2px}
+.task.click{cursor:pointer;margin:0 -12px;padding-inline:12px;border-radius:10px;transition:background-color .12s}
+.task.click:hover{background:var(--ysoft)}.task.click:focus-visible{outline:2px solid var(--y);outline-offset:-2px}
 .tbl.sm th,.tbl.sm td{padding:8px 10px;font-size:13.5px}
 .tbl .num,.tbl th.num{text-align:end;white-space:nowrap}
 .tbl tfoot td{font-weight:700;background:#FAFAFC}
@@ -294,11 +298,11 @@ html[lang=ar] .tbl tr.mxg td{letter-spacing:0}
 <div id="modal"></div>
 <div id="toast"></div>
 <div id="tip"></div>
-<script src="/js/i18n.js?v=2.4"></script>
-<script src="/js/app.js?v=2.4"></script>
-<script src="/js/charts.js?v=2.4"></script>
-<script src="/js/pages.js?v=2.4"></script>
-<script src="/js/pages2.js?v=2.4"></script>
+<script src="/js/i18n.js?v=2.5"></script>
+<script src="/js/app.js?v=2.5"></script>
+<script src="/js/charts.js?v=2.5"></script>
+<script src="/js/pages.js?v=2.5"></script>
+<script src="/js/pages2.js?v=2.5"></script>
 <script>boot();</script>
 </body>
 </html>

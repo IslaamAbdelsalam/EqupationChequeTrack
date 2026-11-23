@@ -27,7 +27,7 @@ function ratesPage() {
   const ch30 = r0 && m30 && m30 !== r0 ? pct(+r0.SDG, +m30.SDG) : null;
   const last90 = L.filter(r => r.date >= addDays(today(), -90));
   const hi = last90.length ? Math.max(...last90.map(r => +r.SDG)) : null, lo = last90.length ? Math.min(...last90.map(r => +r.SDG)) : null;
-  const pts = L.slice(0, 60).reverse().map(r => ({ label: fd(r.date).slice(0, 5), value: +r.SDG, tip: `${fd(r.date)}\n1 USD = ${rnum(r.SDG)} SDG\n1 USD = ${rnum(r.QAR)} QAR` }));
+  const pts = L.slice(0, 60).reverse().map(r => ({ label: fd(r.date), value: +r.SDG, tip: `${fd(r.date)}\n1 USD = ${rnum(r.SDG)} SDG\n1 USD = ${rnum(r.QAR)} QAR` }));
   const form = fin ? `<section class="card"><h2 class="h3">${e.id ? t('Correct the rate of {d}', { d: fd(e.date) }) : t('Enter a rate')}</h2>
     <div class="sm mut" style="margin-top:2px">${t('A rate used by any cheque is locked and cannot change. Alert above {p}% change.', { p: D.settings.rateAlertPct })}</div>
     <div class="fgrid">${fld('r_d', t('Date'), dateIn('r_d', e.date || today()), 1)}${fld('r_q', t('1 USD in QAR'), inp('r_q', e.QAR ?? (r0 ? r0.QAR : ''), 'inputmode="decimal" dir="ltr"'), 1)}
@@ -279,7 +279,7 @@ function repOverview(f) {
     kpis: kpi(t('Request → CFO approval'), dTxt(a1), t('average')) + kpi(t('Approval → cheque issued'), dTxt(a2), t('average')) + kpi(t('Issued → cleared'), dTxt(a3), t('average')) +
       kpi(t('Returned cheques'), closed.length ? `${(ret.length / closed.length * 100).toFixed(1)}%` : '—', t('{a} of {b} cleared or returned', { a: ret.length, b: closed.length })) +
       kpi(t('Rejected requests'), decided ? `${(rej / decided * 100).toFixed(1)}%` : '—', t('{a} of {b} decided', { a: rej, b: decided })),
-    charts: ccard(t('Approved per month, last 12 months'), t('USD equivalent · hover for the count'), vbars(months.map(m => m.label.slice(0, 2) + '/' + m.label.slice(5)), [{ name: t('Approved'), values: mv.map(l => l.reduce((a, c) => a + usdOf(c), 0)), color: CH.gold }], { plain: usdT, tipx: i => t('{n} cheques', { n: mv[i].length }), title: t('Approved per month') })) +
+    charts: ccard(t('Approved per month, last 12 months'), t('USD equivalent · hover for the count'), vbars(months.map(m => m.label), [{ name: t('Approved'), values: mv.map(l => l.reduce((a, c) => a + usdOf(c), 0)), color: CH.gold }], { plain: usdT, tipx: i => t('{n} cheques', { n: mv[i].length }), title: t('Approved per month') })) +
       ccard(t('Top beneficiaries'), t('All requests except rejected and cancelled · USD'), hbar(Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, title: t('Top beneficiaries') })) +
       ccard(t('By operation type'), t('USD equivalent'), hbar(Object.entries(ops).sort((a, b) => b[1] - a[1]).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, color: CH.blue, title: t('By operation type') }))
   };

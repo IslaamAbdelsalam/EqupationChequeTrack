@@ -4,7 +4,7 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 
 ## Features (v2)
 
-- **Design:** Materio-style look (primary #8C57FF, light #F4F5FA background), a side menu with groups and sub-menus, English and Arabic (right-to-left). All dates show as dd/MM/yyyy.
+- **Design:** Materio-style look (primary #8C57FF, light #F4F5FA background), a side menu with groups and sub-menus, English and Arabic (right-to-left). All dates show as dd/MM/yyyy, including chart labels and Telegram messages. In every list, the whole row is clickable: it highlights on hover and opens the cheque or the edit window.
 - **Cheque workflow:** Pending CFO → Second approval (when needed) → Approved → Issued to requester → Received → With beneficiary → Cleared / Returned → Settled. Requests can be Rejected or Cancelled.
 - **Roles:** Department User, Finance, CFO, Top Management, System Admin, Auditor (read-only). Duty rules: no one approves, issues or clears their own request or cheque.
 - **Requests:** entity, operation type (supplier payment, financing instalment, final settlement, institutional instalment, payment on account), payment or guarantee, related party, line items with principal/profit, supporting document upload, partial payments, payment made before the request, urgent priority, duplicate warning.

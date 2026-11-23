@@ -499,7 +499,7 @@ public class Notifier
             foreach (var c in g.l.OrderBy(c => c.DueDate))
             {
                 sb.Append("• ").Append(Fmt.H(c.Id)).Append(" · ").Append(Fmt.H(bens.GetValueOrDefault(c.BenId))).Append('\n');
-                sb.Append("   ").Append(Fmt.H(Amt(c))).Append(" · ").Append(DueWord(s, c));
+                sb.Append("   ").Append(Fmt.H(Amt(c))).Append(" · ").Append(Fmt.D(c.DueDate)).Append(" (").Append(DueWord(s, c)).Append(')');
                 if (!string.IsNullOrEmpty(c.ChequeNo)) sb.Append(" · #").Append(Fmt.H(c.ChequeNo));
                 var e = g.x(c);
                 if (!string.IsNullOrEmpty(e)) sb.Append("\n   ").Append(Fmt.H(e));
@@ -513,7 +513,7 @@ public class Notifier
             {
                 var n = Clock.DaysUntil(s, Exp(k));
                 sb.Append("• ").Append(Fmt.H(k.OpNo)).Append(" · ").Append(Fmt.H(bens.GetValueOrDefault(k.FinancierId))).Append('\n');
-                sb.Append("   ").Append(n < 0 ? $"expired {-n}d ago" : n == 0 ? "expires TODAY" : $"expires {Fmt.D(Exp(k))} (in {n}d)");
+                sb.Append("   ").Append(n < 0 ? $"expired {Fmt.D(Exp(k))} ({-n}d ago)" : n == 0 ? $"expires TODAY {Fmt.D(Exp(k))}" : $"expires {Fmt.D(Exp(k))} (in {n}d)");
                 if (!string.IsNullOrEmpty(k.FollowUpDate)) sb.Append(" · follow-up ").Append(Fmt.D(k.FollowUpDate));
                 if (k.OwnerId.HasValue && users.TryGetValue(k.OwnerId.Value, out var on)) sb.Append(" · ").Append(Fmt.H(Fmt.First(on)));
                 sb.Append('\n');

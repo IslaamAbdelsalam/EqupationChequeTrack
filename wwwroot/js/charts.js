@@ -50,7 +50,7 @@ function vbars(cats, series, o) {
   o = o || {};
   const all = series.flatMap(s => s.values);
   if (!all.some(v => v > 0)) return noData();
-  const W = 600, H = 240, pl = 54, pr = 10, pt = 12, pb = 34, cw = (W - pl - pr) / cats.length;
+  const W = 600, H = 240, pl = 54, pr = 10, pt = 12, pb = cats.length > 8 ? 40 : 34, cw = (W - pl - pr) / cats.length;
   const max = niceMax(Math.max(...all)), Y = v => pt + (H - pt - pb) * (1 - v / max);
   const plain = o.plain || (v => short(v));
   let g = '';
@@ -66,7 +66,11 @@ function vbars(cats, series, o) {
       const tip = `${c}\n${n > 1 ? s.name + ': ' : ''}${plain(v)}${o.tipx ? '\n' + o.tipx(i, j) : ''}`;
       g += `<g ${tipAttr(tip)}><rect x="${x0 + j * (bw + gap) - 1}" y="${pt}" width="${bw + 2}" height="${H - pt - pb}" fill="transparent"/>${h > 0 ? `<rect x="${x0 + j * (bw + gap)}" y="${y}" width="${bw}" height="${h}" rx="4" fill="${s.color}"/><rect x="${x0 + j * (bw + gap)}" y="${H - pb - Math.min(h, 4)}" width="${bw}" height="${Math.min(h, 4)}" fill="${s.color}"/>` : ''}</g>`;
     });
-    g += `<text x="${pl + i * cw + cw / 2}" y="${H - pb + 18}" text-anchor="middle">${esc(c)}</text>`;
+    const cx = pl + i * cw + cw / 2, cut = String(c).lastIndexOf('/');
+    // many columns: show MM/yyyy on two lines (MM over yyyy) so the labels do not run into each other
+    g += cats.length > 8 && cut > 0
+      ? `<text x="${cx}" y="${H - pb + 15}" text-anchor="middle">${esc(String(c).slice(0, cut + 1))}<tspan x="${cx}" dy="13">${esc(String(c).slice(cut + 1))}</tspan></text>`
+      : `<text x="${cx}" y="${H - pb + 18}" text-anchor="middle">${esc(c)}</text>`;
   });
   const legend = n > 1 ? `<div class="legend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>` : '';
   return `${legend}<div class="chart" role="img" aria-label="${esc(o.title || '')}" dir="ltr"><svg viewBox="0 0 ${W} ${H}">${g}</svg></div>`;
@@ -76,7 +80,7 @@ function vbars(cats, series, o) {
 function signedBars(cats, values, o) {
   o = o || {};
   if (!values.some(v => Math.abs(v) > 0)) return noData();
-  const W = 600, H = 240, pl = 54, pr = 10, pt = 12, pb = 34, cw = (W - pl - pr) / cats.length;
+  const W = 600, H = 240, pl = 54, pr = 10, pt = 12, pb = cats.length > 8 ? 40 : 34, cw = (W - pl - pr) / cats.length;
   const m = niceMax(Math.max(...values.map(Math.abs))), Y = v => pt + (H - pt - pb) * (0.5 - v / (2 * m));
   const plain = o.plain || (v => short(v));
   let g = '';
@@ -137,7 +141,7 @@ function lineChart(points, o) {
   const every = Math.ceil(points.length / 7);
   points.forEach((p, i) => {
     g += `<g ${tipAttr(p.tip || (p.label + ': ' + plain(p.value)))}><circle cx="${X(i)}" cy="${Y(p.value)}" r="12" fill="transparent"/><circle cx="${X(i)}" cy="${Y(p.value)}" r="4" fill="${col}" stroke="#fff" stroke-width="2"/></g>`;
-    if (i % every === 0 || i === points.length - 1) g += `<text x="${X(i)}" y="${H - pb + 18}" text-anchor="middle">${esc(p.label)}</text>`;
+    if ((i % every === 0 && points.length - 1 - i >= every * 0.6) || i === points.length - 1) g += `<text x="${X(i)}" y="${H - pb + 18}" text-anchor="middle">${esc(p.label)}</text>`;
   });
   return `<div class="chart" role="img" aria-label="${esc(o.title || '')}" dir="ltr"><svg viewBox="0 0 ${W} ${H}">${g}</svg></div>`;
 }
