@@ -148,7 +148,7 @@ async function api(path, body) {
 }
 async function loadState() {
   const j = await api('/api/state');
-  if (j && j.me) { D = j; indexD(); S.user = j.me; return true; }
+  if (j && j.me) { D = j; indexD(); S.user = j.me; S.loadedAt = Date.now(); startPulse(); return true; }
   return false;
 }
 async function act(action, data, okMsg, opt) {
@@ -316,7 +316,7 @@ function route() {
   const r = parseHash();
   if (r.page === 'reset') { S.resetToken = r.arg; S.resetInfo = null; history.replaceState(null, '', location.pathname); }
   else { S.page = r.page; S.arg = r.arg; S.q = r.q; }
-  closeM(); S.side = false; document.body.classList.remove('menuopen');
+  closeM(); S.side = false; S.nOpen = false; document.body.classList.remove('menuopen');
   render(); window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
@@ -397,6 +397,7 @@ function topHtml() {
    <button class="btn btn-o btn-sm burger" aria-label="${t('Menu')}" onclick="toggleMenu()">${ic('menu')}</button>
    <div class="srch">${ic('search')}<input class="in" id="gq" type="search" placeholder="${t('Search by reference, beneficiary or cheque no.')}" aria-label="${t('Search cheques')}" oninput="gsearch(this.value)" onblur="setTimeout(()=>{const r=document.getElementById('gres');if(r)r.innerHTML=''},200)"><div id="gres"></div></div>
    <div class="sp"></div>
+   ${bellHtml()}
    <button class="btn btn-o btn-sm" onclick="switchLang()" ${LANG === 'ar' ? 'lang="en"' : 'lang="ar"'}>${ic('globe')}${LANG === 'ar' ? 'English' : 'العربية'}</button>
    <a class="who" href="#/profile" style="text-decoration:none;color:inherit"><div class="nm" style="text-align:end"><div class="b">${esc(un(u))}</div><div class="sm mut">${esc(roleName(u.role))}</div></div><div class="av">${esc((un(u) || '?').trim()[0] || '?')}</div></a>
   </header>`;
@@ -454,6 +455,235 @@ function msgForMe(m, c) {
   }
 }
 function msgToTxt(m) { return m.to === 'user' ? UN(m.toUserId) : t(MSG_TO[m.to] || MSG_TO.all); }
+
+/* ---------- notifications: the bell, its summary panel and on-screen alerts ----------
+   What needs the user's action comes from myTasks(), so each request reaches only the roles that act on it
+   at its stage (first approval, second approval, issue, clearing, settling, follow-up), within the cheques
+   their role sees. Updates are what other people did on those requests since the user last opened the bell. */
+const NOTIF_POLL = 30000;                  // the pulse check reads no database, so this is cheap
+S.nSeenKeys = new Set();
+const N_EVENTS = {
+  created: '{n} raised the request', approved: '{n} approved it', approved1: '{n} approved it; it now needs the second approval',
+  approved2: '{n} gave the second approval', rejected: '{n} rejected it', issued: '{n} issued the cheque',
+  received: '{n} received the cheque', delivered: '{n} handed the cheque to the beneficiary', cleared: '{n} recorded it as cleared',
+  returned: '{n} recorded it as returned by the bank', solved: '{n} settled the returned cheque', poa: '{n} settled the payment on account'
+};
+/** What other people did on a request, with when and who. The user's own actions are left out. */
+function chqEvents(c) {
+  const me = S.user, out = [];
+  const add = (type, at, byId, byName, extra) => {
+    if (!at) return;
+    if (byId ? byId === me.id : (byName && byName === me.fullName)) return;
+    out.push({ type, at, who: byId ? UN(byId) : byN(byName), c, extra: extra || '' });
+  };
+  add('created', c.createdAt, c.requesterId);
+  if (c.appr) add(c.need2 && !c.appr2 && c.status === 'Pending2' ? 'approved1' : 'approved', c.appr.at, c.appr.byId, c.appr.by);
+  if (c.appr2) add('approved2', c.appr2.at, c.appr2.byId, c.appr2.by);
+  if (c.rejected) add('rejected', c.rejected.at, 0, c.rejected.by, c.rejected.reason);
+  if (c.issue) add('issued', c.issue.at, c.issue.byId, c.issue.by, c.issue.no);
+  if (c.received) add('received', c.received.at, 0, c.received.by);
+  if (c.delivered) add('delivered', c.delivered.at, 0, c.delivered.by, c.delivered.to);
+  if (c.closed) add(c.closed.status === 'Returned' ? 'returned' : 'cleared', c.closed.at, c.closed.byId, c.closed.by);
+  if (c.solved) add('solved', c.solved.at, 0, c.solved.by);
+  if (c.poa) add('poa', c.poa.at, 0, c.poa.by);
+  return out;
+}
+const stampMs = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +(s.slice(11, 13) || 0), +(s.slice(14, 16) || 0));
+/** The company's local time now ("yyyy-MM-dd HH:mm"), from the server clock at the last load plus the time since. */
+function serverNow() { if (!D || !D.now) return ''; return new Date(stampMs(D.now) + (Date.now() - (S.loadedAt || Date.now()))).toISOString().slice(0, 16).replace('T', ' '); }
+/** "5 min ago" from the server's own clock, so the company time zone and the device's do not matter. */
+function ago(at) {
+  if (!at || !D || !D.now) return '';
+  if (at.length <= 10) return fd(at);
+  const min = Math.round((stampMs(serverNow()) - stampMs(at)) / 60000);
+  if (min < 1) return t('just now');
+  if (min < 60) return t('{n} min ago', { n: min });
+  if (min < 24 * 60 && at.slice(0, 10) === today()) return t('{n} h ago', { n: Math.floor(min / 60) });
+  if (at.slice(0, 10) === addDays(today(), -1)) return t('yesterday') + ' ' + at.slice(11, 16);
+  return fd(at);
+}
+/** One notification line: what it is about, what happened or is needed, when, and where it opens. */
+function nItem(x) {
+  const c = x.c, ben = c ? esc(nm(B(c.benId))) : '';
+  const head = c ? `<bdi dir="ltr">${c.id}</bdi> · ${ben}` : '';
+  switch (x.kind) {
+    case 'msg': { const m = x.msgs[x.msgs.length - 1];
+      return { key: 'msg:' + m.id, group: 'msg', icon: 'mail', head, at: m.at, href: '#/cheque/' + c.id, n: x.msgs.length,
+        tag: x.msgs.length > 1 ? t('{n} new messages', { n: x.msgs.length }) : t('New message'),
+        text: `${esc(t(m.kind))} · ${t('From {n}', { n: `<bdi>${esc(byN(m.by))}</bdi>` })}: <bdi>${esc(m.text)}</bdi>` }; }
+    case 'approve': return { key: 'act:' + x.kind + ':' + c.id + ':' + c.status, group: 'approve', icon: 'check', head, href: '#/cheque/' + c.id,
+      at: c.status === 'Pending2' && c.appr ? c.appr.at : c.createdAt, tag: c.status === 'Pending2' ? t('Second approval') : t('To approve'),
+      text: `${payTxt(c)} · ${t('from {n}', { n: `<bdi>${esc(UN(c.requesterId))}</bdi>` })}` };
+    case 'issue': return { key: 'act:issue:' + c.id, group: 'issue', icon: 'cheque', head, href: '#/cheque/' + c.id,
+      at: (c.appr2 && c.appr2.at) || (c.appr && c.appr.at), tag: t('To issue'), text: `${payTxt(c)} · ${t('Approved — ready to issue')}` };
+    case 'clear': return { key: 'act:clear:' + c.id, group: 'follow', icon: 'cal', head, href: '#/cheque/' + c.id, at: c.dueDate,
+      tag: t('Due'), text: `${payTxt(c)} · ${t('due {d}: record it as cleared or returned', { d: fd(c.dueDate) })}` };
+    case 'settle': return { key: 'act:settle:' + c.id, group: 'follow', icon: 'alert', head, href: '#/cheque/' + c.id, at: c.closed && c.closed.at,
+      tag: t('Returned'), text: `${payTxt(c)} · ${t('returned by the bank: settle it')}` };
+    case 'poa': return { key: 'act:poa:' + c.id, group: 'follow', icon: 'contract', head, href: '#/cheque/' + c.id, at: c.poaSettleDate,
+      tag: t('Payment on account'), text: t('settle by {d}', { d: fd(c.poaSettleDate) }) };
+    case 'recv': return { key: 'act:recv:' + c.id, group: 'mine', icon: 'cheque', head, href: '#/cheque/' + c.id, at: c.issue && c.issue.at,
+      tag: t('Your cheque'), text: t('The cheque is ready: confirm when you receive it.') };
+    case 'deliv': return { key: 'act:deliv:' + c.id, group: 'mine', icon: 'cheque', head, href: '#/cheque/' + c.id, at: c.received && c.received.at,
+      tag: t('Your cheque'), text: t('Confirm when you hand it to the beneficiary.') };
+    case 'contract': { const k = x.k, s = kState(k);
+      return { key: 'act:contract:' + k.opNo, group: 'contract', icon: 'contract', head: `<bdi dir="ltr">${esc(k.opNo)}</bdi> · ${esc(nm(B(k.financierId)))}`,
+        at: kExp(k), click: `kModal(${k.id})`, tag: s.due ? t('Follow-up due') : t('Contract'), text: t('Contract expiry {d}', { d: fd(kExp(k)) }) }; }
+    case 'rate': return { key: 'act:rate:' + today(), group: 'rate', icon: 'rates', head: t("Today's exchange rate is missing"), at: today(), href: '#/rates',
+      tag: t('Rate'), text: t('Approvals, issues and clearing need it.') };
+  }
+  return null;
+}
+function nUpdate(e) {
+  const c = e.c;
+  return { key: 'upd:' + c.id + ':' + e.type + ':' + e.at, group: 'update', icon: e.type === 'rejected' || e.type === 'returned' ? 'alert' : 'cheque', at: e.at,
+    head: `<bdi dir="ltr">${c.id}</bdi> · ${esc(nm(B(c.benId)))}`, href: '#/cheque/' + c.id, upd: e.type,
+    text: t(N_EVENTS[e.type], { n: `<bdi>${esc(e.who)}</bdi>` }) + (e.type === 'rejected' && e.extra ? ': <bdi>' + esc(e.extra) + '</bdi>' : '') + (e.type === 'issued' && e.extra ? ` (${t('no.')} <bdi dir="ltr">${esc(e.extra)}</bdi>)` : '') };
+}
+/** Everything the bell knows: actions waiting for me, new updates since I last looked, and earlier ones. */
+function notifData(seenAt) {
+  if (!D || !S.user) return { acts: [], fresh: [], earlier: [], count: 0, all: [] };
+  const fixed = seenAt != null;
+  const tasks = myTasks(), acts = tasks.map(nItem).filter(Boolean);
+  const busyIds = new Set(tasks.filter(x => x.c).map(x => x.c.id));
+  const seen = fixed ? seenAt : (S.user.notifSeen || ''), d3 = addDays(today(), -3), d14 = addDays(today(), -14);
+  const floor = seen ? (seen > d14 ? seen : d14) : d3;
+  const ev = [];
+  for (const c of D.cheques) { if (busyIds.has(c.id)) continue; for (const e of chqEvents(c)) if (e.at > d14) ev.push(e); }
+  ev.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
+  const ups = ev.map(nUpdate);
+  const fresh = ups.filter(u => u.at > floor && (fixed || !S.nSeenKeys.has(u.key))).slice(0, 40);
+  const fk = new Set(fresh.map(u => u.key));
+  const earlier = ups.filter(u => !fk.has(u.key) && u.at > d3).slice(0, 10);
+  return { acts, fresh, earlier, count: acts.length + fresh.length, all: acts.concat(fresh) };
+}
+function nRow(x, isNew) {
+  const open = x.click ? `href="javascript:void(0)" onclick="closeNotif();${x.click}"` : `href="${x.href}" onclick="closeNotif()"`;
+  return `<a class="nit ${isNew ? 'new' : ''}" ${open}><span class="ni ${x.group === 'update' && x.icon === 'alert' ? 'bad' : ''}">${ic(x.icon)}</span>
+    <span class="nb"><span class="nh">${x.head}${x.tag ? `<span class="chip ${x.group === 'msg' ? 'c-2nd' : x.group === 'approve' ? 'c-pend' : 'c-appr'}">${esc(x.tag)}</span>` : ''}</span>
+    <span class="nt">${x.text}</span><span class="nw">${esc(ago(x.at))}</span></span>${isNew ? '<span class="ndot" aria-hidden="true"></span>' : ''}</a>`;
+}
+/** The summary at the top of the panel: one chip per kind of thing, with its count. */
+function nSummary(n) {
+  const g = k => n.acts.filter(x => x.group === k).length;
+  const msgs = n.acts.filter(x => x.group === 'msg').reduce((a, x) => a + (x.n || 1), 0);
+  const chips = [
+    [msgs, 'Messages', 'mail', (n.acts.find(x => x.group === 'msg') || {}).href],
+    [g('approve'), 'To approve', 'check', '#/approvals'],
+    [g('issue'), 'To issue', 'cheque', '#/issue'],
+    [g('follow'), 'To follow up', 'cal', has('followup') ? '#/followup' : '#/cheques'],
+    [g('mine'), 'To confirm', 'cheque', '#/mine'],
+    [g('contract'), 'Contracts', 'contract', '#/contracts'],
+    [g('rate'), 'Rate missing', 'rates', '#/rates'],
+    [n.fresh.length, 'Updates', 'bell', '']
+  ].filter(c => c[0]);
+  return chips.length ? `<div class="nsum">${chips.map(c => `<a class="nchip" href="${c[3] || 'javascript:void(0)'}" ${c[3] ? 'onclick="closeNotif()"' : `onclick="document.getElementById('nfresh')?.scrollIntoView({block:'nearest'})"`}>${ic(c[2])}<span>${esc(t(c[1]))}</span><b>${N(c[0])}</b></a>`).join('')}</div>` : '';
+}
+function notifPanel() {
+  const n = notifData(S.nShownSeen || '');
+  const acts = n.acts.slice(0, 12);
+  return `<div class="npanel" role="dialog" aria-label="${t('Notifications')}" onclick="event.stopPropagation()">
+    <div class="nhd"><h2 class="h3">${t('Notifications')}</h2><button class="x" onclick="closeNotif()" aria-label="${t('Close')}">${ic('x')}</button></div>
+    ${nSummary(n)}
+    ${acts.length ? `<div class="nsec">${t('Needs your action')}</div>${acts.map(x => nRow(x, false)).join('')}${n.acts.length > 12 ? `<a class="nmore" href="#/home" onclick="closeNotif()">${t('{n} more on Home', { n: n.acts.length - 12 })}</a>` : ''}` : ''}
+    ${n.fresh.length ? `<div class="nsec" id="nfresh">${t('New since you last looked')}</div>${n.fresh.map(u => nRow(u, true)).join('')}` : ''}
+    ${n.earlier.length ? `<div class="nsec">${t('Earlier')}</div>${n.earlier.map(u => nRow(u, false)).join('')}` : ''}
+    ${!acts.length && !n.fresh.length && !n.earlier.length ? `<div class="nempty">${ic('check')}<div class="b">${t("You're all caught up.")}</div><div class="sm mut">${t('New messages, approvals and updates on your requests will show here.')}</div></div>` : ''}
+  </div>`;
+}
+function bellHtml() {
+  const n = notifData();
+  return `<div class="nbw" id="nbw"><button class="btn btn-o btn-sm nbell ${n.count ? 'on' : ''}" onclick="toggleNotif(event)" aria-haspopup="dialog" aria-expanded="${!!S.nOpen}"
+    aria-label="${n.count ? t('Notifications: {n} new', { n: n.count }) : t('Notifications')}" title="${t('Notifications')}">${ic('bell')}${n.count ? `<span class="nbadge">${n.count > 99 ? '99+' : n.count}</span>` : ''}</button>${S.nOpen ? notifPanel() : ''}</div>`;
+}
+function setTitle() { const n = D && S.user ? notifData().count : 0; document.title = n ? `(${n}) ChequeTrack` : 'ChequeTrack'; }
+function bellRefresh() { const w = document.getElementById('nbw'); if (w) w.outerHTML = bellHtml(); setTitle(); }
+async function toggleNotif(e) {
+  if (e) e.stopPropagation();
+  S.nOpen = !S.nOpen;
+  if (S.nOpen) { S.nShownSeen = S.user.notifSeen || ''; hideNAlert(); }
+  bellRefresh();
+  if (S.nOpen) markSeen();
+}
+function closeNotif() { if (!S.nOpen) return; S.nOpen = false; bellRefresh(); }
+/** Opening the bell marks the updates as seen (on every device); actions stay until they are done. */
+async function markSeen() {
+  const n = notifData();
+  n.fresh.forEach(u => S.nSeenKeys.add(u.key));
+  if (!n.fresh.length && S.user.notifSeen) return;
+  const j = await api('/api/act', { action: 'seenNotifs' });
+  if (j && j.ok) S.user.notifSeen = j.at;
+  bellRefresh();          // the open panel keeps its "new" marks; the count drops to what still needs action
+}
+document.addEventListener('click', e => { if (S.nOpen && !e.target.closest('.nbw')) closeNotif(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.nOpen && !$('#modal').innerHTML) closeNotif(); });
+
+/* on-screen alert: shown when something new arrives while the app is open, and once after signing in */
+function hideNAlert() { const b = document.getElementById('nalert'); if (b) b.innerHTML = ''; clearTimeout(hideNAlert.t); }
+function showNAlert(title, items, more) {
+  let b = document.getElementById('nalert');
+  if (!b) { b = document.createElement('div'); b.id = 'nalert'; document.body.appendChild(b); }
+  b.innerHTML = `<div class="nalert" role="status" aria-live="polite" onmouseenter="clearTimeout(hideNAlert.t)" onmouseleave="hideNAlert.t=setTimeout(hideNAlert,6000)">
+    <div class="nah">${ic('bell')}<b>${esc(title)}</b><button class="x" onclick="hideNAlert()" aria-label="${t('Close')}">${ic('x')}</button></div>
+    ${items.map(x => `<a class="nai" ${x.click ? `href="javascript:void(0)" onclick="hideNAlert();${x.click}"` : `href="${x.href}" onclick="hideNAlert()"`}><span class="nh">${x.head}</span><span class="nt">${x.tag ? esc(x.tag) + ' · ' : ''}${x.text}</span></a>`).join('')}
+    <button class="btn btn-o btn-sm" onclick="hideNAlert();if(!S.nOpen)toggleNotif(event)">${more ? t('{n} more · open notifications', { n: more }) : t('Open notifications')}</button></div>`;
+  clearTimeout(hideNAlert.t); hideNAlert.t = setTimeout(hideNAlert, 15000);
+}
+/** After a refresh, alert about what was not there before. */
+function notifyNew(before) {
+  if (S.nOpen) { bellRefresh(); return; }
+  const n = notifData(), add = n.all.filter(x => !before.has(x.key));
+  if (!add.length) return;
+  const title = add.length === 1 ? (add[0].group === 'msg' ? t('New message') : add[0].group === 'update' ? t('New update') : t('Needs your action'))
+    : t('{n} new notifications', { n: add.length });
+  showNAlert(title, add.slice(0, 3), add.length > 3 ? add.length - 3 : 0);
+}
+/** Once per sign-in: what is waiting, as a short summary. */
+function notifSummaryOnce() {
+  if (!D || !S.user) return;
+  const k = 'ct.nsum.' + S.user.id; try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch (e) { }
+  const n = notifData(); if (!n.count) return;
+  const parts = [], g = grp => n.acts.filter(x => x.group === grp).length;
+  if (g('msg')) parts.push(t('{n} with new messages', { n: g('msg') }));
+  if (g('approve')) parts.push(t('{n} to approve', { n: g('approve') }));
+  if (g('issue')) parts.push(t('{n} to issue', { n: g('issue') }));
+  if (g('follow')) parts.push(t('{n} to follow up', { n: g('follow') }));
+  if (g('mine')) parts.push(t('{n} to confirm', { n: g('mine') }));
+  if (g('contract')) parts.push(t('{n} contracts', { n: g('contract') }));
+  if (g('rate')) parts.push(t('Rate missing'));
+  if (n.fresh.length) parts.push(t('{n} updates', { n: n.fresh.length }));
+  showNAlert(t('Since your last visit'), [{ head: esc(parts.join(' · ')), text: '', href: '#/home' }], 0);
+}
+
+/* refresh in the background: poll the change number, reload the data only when something changed */
+const QUIET_PAGES = new Set(['home', 'mine', 'cheques', 'approvals', 'issue', 'followup', 'cheque', 'contracts', 'poa', 'reports', 'entries', 'audit']);
+async function refreshQuiet() {
+  const before = new Set(notifData().all.map(x => x.key));
+  const j = await api('/api/state'); if (!j || !j.me) return;
+  D = j; indexD(); S.user = j.me; S.loadedAt = Date.now();
+  const a = document.activeElement;
+  const typing = a && a !== document.body && a.matches('input,textarea,select,[contenteditable="true"]');
+  if (!$('#modal').innerHTML && !typing && QUIET_PAGES.has(S.page)) { const y = window.scrollY; render(); window.scrollTo(0, y); }
+  else bellRefresh();
+  notifyNew(before);
+}
+async function pulse() {
+  if (!S.user || !D || document.hidden || busy || pulse.on) return;
+  pulse.on = true;
+  try {
+    let r; try { r = await fetch('/api/pulse', { credentials: 'same-origin', cache: 'no-store' }); } catch (e) { return; }
+    if (r.status === 401) { await api('/api/state'); return; }     // session ended: the sign-in screen opens
+    if (!r.ok) return;
+    let j = null; try { j = await r.json(); } catch (e) { }
+    if (j && j.pulse && j.pulse !== D.pulse) await refreshQuiet();
+    else if (D.now && serverNow().slice(0, 10) !== D.today) await refreshQuiet();     // a new day: due items change
+  } finally { pulse.on = false; }
+}
+function startPulse() {
+  if (startPulse.on) return; startPulse.on = true;
+  setInterval(pulse, NOTIF_POLL);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pulse(); });
+}
 /* ---------- contract checks on a request: they warn, they never block ---------- */
 function kWarns(opNos, due) {
   const out = [];
@@ -496,6 +726,7 @@ function render() {
   try { body = pageView(); }
   catch (e) { console.error(e); body = `<div class="errbox">${ic('alert')}<span>${t('This page could not be shown.')} ${esc(e.message)}</span></div>`; }
   root.innerHTML = `<div class="app">${sideHtml()}<div class="main">${topHtml()}<main class="wrap" id="main">${body}</main></div></div>`;
+  setTitle();
   if (S.after) { const f = S.after; S.after = null; try { f(); } catch (e) { console.error(e); } }
 }
 function denied() { return `<div class="card empty">${t('This page is not available for your role.')}</div>`; }
@@ -561,6 +792,7 @@ async function afterSignIn(j) {
   await loadState(); startIdle(j.sessionMin);
   if (!location.hash || location.hash === '#/' || location.hash === '#') location.hash = '#/home'; else route();
   render();
+  setTimeout(notifSummaryOnce, 700);
 }
 async function doForgot(e) {
   e.preventDefault();
@@ -571,7 +803,7 @@ async function doForgot(e) {
 }
 async function logout(reason) {
   await api('/api/logout', { reason: reason || '' });
-  S.user = null; D = null; S.auth = 'login'; S.loginMsg = reason === 'idle' ? t('You were signed out after a period of inactivity.') : '';
+  S.user = null; D = null; S.nOpen = false; hideNAlert(); document.title = 'ChequeTrack'; S.auth = 'login'; S.loginMsg = reason === 'idle' ? t('You were signed out after a period of inactivity.') : '';
   location.hash = ''; render();
 }
 function polHint(id, out) {
@@ -714,4 +946,5 @@ async function boot() {
     await loadState(); startIdle(j.sessionMin);
   }
   render();
+  if (S.user && D) setTimeout(notifSummaryOnce, 700);
 }

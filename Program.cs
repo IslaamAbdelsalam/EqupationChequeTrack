@@ -100,6 +100,13 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.UseAuthentication();
 app.UseAuthorization();
+// notifications: a saved change moves the pulse so other open screens refresh their data
+app.Use(async (ctx, next) =>
+{
+    await next();
+    if (ctx.Response.StatusCode == 200 && HttpMethods.IsPost(ctx.Request.Method) && ctx.Request.Path.StartsWithSegments("/api/act")
+        && !(ctx.Items.TryGetValue("act", out var act) && act is string an && Pulse.Private.Contains(an))) Pulse.Bump();
+});
 
 var J = new JsonSerializerOptions { PropertyNamingPolicy = null };
 IResult Ok(object o) => Results.Json(o, J);
@@ -148,7 +155,7 @@ string BaseUrl(HttpContext ctx)
 }
 
 object PolicyView(Policy p) => new { minLen = p.MinLen, upper = p.Upper, digit = p.Digit, special = p.Special, expiryDays = p.ExpiryDays, maxAttempts = p.MaxAttempts, lockMinutes = p.LockMinutes, firstChange = p.FirstChange, sessionMin = p.SessionMin };
-object UserView(AppUser u, Access a) => new { id = u.Id, username = u.Username, fullName = u.FullName, fullNameAr = u.FullNameAr ?? "", role = u.Role, deptId = u.DeptId, email = u.Email ?? "", lang = string.IsNullOrEmpty(u.Lang) ? "en" : u.Lang, isAdmin = Perm.IsAdmin(a.P), perms = Perm.View(a.P), scope = a.Scope };
+object UserView(AppUser u, Access a) => new { id = u.Id, username = u.Username, fullName = u.FullName, fullNameAr = u.FullNameAr ?? "", role = u.Role, deptId = u.DeptId, email = u.Email ?? "", lang = string.IsNullOrEmpty(u.Lang) ? "en" : u.Lang, isAdmin = Perm.IsAdmin(a.P), perms = Perm.View(a.P), scope = a.Scope, notifSeen = u.NotifSeen ?? "" };
 
 async Task<string> SendReset(AppDb db, AppSettings s, Mailer mail, AppUser x, string baseUrl)
 {
@@ -371,6 +378,7 @@ app.MapPost("/api/password", async (HttpContext ctx, AppDb db, SettingsStore ss,
 // ---------- state ----------
 app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
 {
+    var pulse = Pulse.Key;   // read first: a change made while this loads makes the next poll reload
     var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
@@ -449,7 +457,7 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
 
     return Ok(new
     {
-        me = UserView(u, A), anyAdmin, today = Clock.Today(s),
+        me = UserView(u, A), anyAdmin, today = Clock.Today(s), now = Clock.Stamp(s), pulse,
         departments = await db.Departments.AsNoTracking().OrderBy(d => d.Id).Select(d => new { id = d.Id, nameEn = d.NameEn, nameAr = d.NameAr }).ToListAsync(),
         roles = roles.OrderBy(r => r.BuiltIn ? 0 : 1).ThenBy(r => r.Id).Select(r => new { id = r.Id, key = r.Key, nameEn = r.NameEn, nameAr = r.NameAr, deptId = r.DeptId, scope = r.Scope, builtIn = r.BuiltIn, notes = r.Notes ?? "", perms = Perm.View(Perm.Parse(r.Perms)), updatedBy = r.UpdatedBy ?? "", updatedAt = r.UpdatedAt ?? "" }).ToList(),
         permCatalog = Perm.Catalog.Select(c => new { page = c.Key, group = c.Group, ops = c.Ops }).ToList(),
@@ -493,6 +501,9 @@ static object ChequeView(Cheque c, List<object> lines, List<object> files) => ne
 // Keep-awake check for an external pinger (cron-job.org every 10 min): answers without touching the database,
 // so the free-plan web app stays loaded without using Azure SQL free time.
 app.MapGet("/api/ping", () => Results.Text("ok"));
+// Notifications poll this every 30 s. It reads only memory (the signed-in cookie and the change number), never the database.
+app.MapGet("/api/pulse", (HttpContext ctx) => ctx.User.Identity?.IsAuthenticated == true
+    ? Results.Json(new { ok = true, pulse = Pulse.Key }, J) : Results.Json(new { ok = false, error = "Please sign in again." }, J, statusCode: 401));
 
 // Audit log: loaded only when the Audit page is opened (it used to come with every state load).
 app.MapGet("/api/audit", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
@@ -534,6 +545,7 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
     var a = Str(b, "action");
+    ctx.Items["act"] = a;
     var me = u.FullName;
     var roles = await AllRoles(db);
     var A = Access.Of(u, roles, await AnyAdmin(db, roles));
@@ -805,6 +817,12 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
                     if (!(m.ReadBy ?? "").Contains("|" + u.Id + "|") && (m.ReadBy ?? "|").Length < 1900) m.ReadBy = (string.IsNullOrEmpty(m.ReadBy) ? "|" : m.ReadBy) + u.Id + "|";
                 Log(db, s, me, "Message", c.Id, $"{kind} to {to}: {(text.Length > 120 ? text[..120] + "…" : text)}");
                 return await Save(db, c.Id);
+            }
+            case "seenNotifs":
+            {
+                u.NotifSeen = Clock.Stamp(s);
+                await db.SaveChangesAsync();
+                return Ok(new { ok = true, at = u.NotifSeen });
             }
             case "readComments":
             {

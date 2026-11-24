@@ -107,6 +107,7 @@ public static class Schema
         ("Cheques", "PoaSettledBy", "nvarchar(150) NULL"), ("Cheques", "PoaSettledAt", "nvarchar(20) NULL"), ("Cheques", "PoaRef", "nvarchar(150) NULL"),
         // v3
         ("Users", "FullNameAr", "nvarchar(150) NULL"),
+        ("Users", "NotifSeen", "nvarchar(20) NULL"),
         ("Contracts", "ExpiryDate", "nvarchar(10) NULL"), ("Contracts", "NoticeDays", "int NOT NULL CONSTRAINT DF_Contracts_NoticeDays DEFAULT 30"),
         ("Contracts", "OwnerId", "int NULL"), ("Contracts", "FollowUpDate", "nvarchar(10) NULL"), ("Contracts", "Status", "nvarchar(20) NULL"),
         ("Contracts", "ClosedAt", "nvarchar(20) NULL"), ("Contracts", "ClosedBy", "nvarchar(150) NULL"), ("Contracts", "CloseReason", "nvarchar(300) NULL"),

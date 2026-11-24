@@ -18,6 +18,16 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 - **Telegram:** daily digest and stage alerts (optional, can be hidden).
 - **Upgrade:** an existing v1 database is upgraded in place on start-up (`Schema.cs`); old cheques are kept.
 
+## What's new in v3.3
+
+- **Notifications bell** in the top bar of every screen, with a red count. It opens a summary panel:
+  - **Summary chips:** messages, to approve, to issue, to follow up, to confirm, contracts, missing rate, updates. Each chip opens its page.
+  - **Needs your action:** each request reaches only the roles that act on it at its stage: first approval, second approval, issuing, clearing or return, settling, payment on account, the requester's receipt and delivery, contract follow-up and today's rate. Users see only the requests their role can see (own, department or all).
+  - **New since you last looked:** what other people did on those requests (raised, approved, second approval, rejected, issued, received, delivered, cleared, returned, settled), newest first. Opening the bell marks them as seen on every device; actions stay until they are done.
+- **On-screen alert** when something new arrives while the app is open (a new message, a request to approve, an update), and a short "Since your last visit" summary after signing in. The browser tab shows the count, e.g. "(3) ChequeTrack".
+- **Background refresh without using Azure SQL free time:** open screens check `/api/pulse` every 30 seconds. It reads only a change number kept in memory, never the database; the data reloads only when something was saved. A form being typed in is never redrawn.
+- New column `Users.NotifSeen`, added automatically at start-up. Test: `tests/e2e_notif.py`.
+
 ## What's new in v3.2
 
 - **Messages on each request.** The requester, the CFO / Top Management and Finance can write to each other on the cheque page. Each message has a type (Query, Document change, Modification, Answer, Note) and goes to everyone on the request, the requester, the approvers, Finance or one named person. The **Messages** card shows from, to, when, the stage and the text. Unread messages addressed to you appear on the Home board under "Waiting for you" and in the menu count. Opening the request marks them as read. Stored in the new `dbo.Comments` table, which is created automatically at start-up.

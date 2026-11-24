@@ -298,6 +298,21 @@ public class SettingsStore
     public void SetSmtpPass(AppSettings s, string pass) => s.Smtp.PassEnc = string.IsNullOrEmpty(pass) ? "" : _m.Protect(pass);
 }
 
+/// <summary>
+/// Change signal for the notifications. Every saved change bumps the number; browsers poll /api/pulse
+/// (no database access, so Azure SQL free time is not used) and reload their data only when it moved.
+/// Boot changes when the app restarts, so clients reload once after a deployment.
+/// </summary>
+public static class Pulse
+{
+    static long _v;
+    public static readonly string Boot = Guid.NewGuid().ToString("N")[..8];
+    public static string Key => Boot + ":" + Interlocked.Read(ref _v);
+    public static void Bump() => Interlocked.Increment(ref _v);
+    /// <summary>Actions that change only the signed-in user's own view: they do not wake the other screens.</summary>
+    public static readonly HashSet<string> Private = new() { "readComments", "setLang", "seenNotifs", "testEmail" };
+}
+
 public static class Clock
 {
     public static TimeZoneInfo Zone(AppSettings s)

@@ -46,6 +46,7 @@ public class AppUser
     public int TwoFaTries { get; set; }
     // added in v3
     [MaxLength(150)] public string FullNameAr { get; set; } = "";
+    [MaxLength(20)] public string NotifSeen { get; set; }   // last time the user opened the notifications (local stamp)
 }
 
 /// A role: what its users may open and do (pages × view/create/edit/delete plus workflow steps),
