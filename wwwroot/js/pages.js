@@ -110,36 +110,43 @@ function homeCharts() {
 }
 
 /* =================== CHEQUE LISTS =================== */
-function chqTable(key, rows, empty) {
-  const p = pageOf(key, rows);
+function chqTable(key, rows, empty, pg, total) {
   if (!rows.length) return `<div class="empty">${empty || t('No cheques here.')}</div>`;
   return `<div class="tw"><table class="tbl cards"><thead><tr><th>${t('Cheque')}</th><th>${t('Entity')}</th><th class="num">${t('Amount')}</th><th>${t('Due date')}</th><th>${t('Stage')}</th></tr></thead><tbody>
-   ${p.rows.map(c => `<tr class="click" onclick="go('cheque/${c.id}')"><td><a class="lnk" href="#/cheque/${c.id}" onclick="event.stopPropagation()"><bdi dir="ltr">${c.id}</bdi> · ${esc(nm(B(c.benId)))}</a><div class="sm mut">${t(c.opType)} · ${esc(UN(c.requesterId))}</div></td>
+   ${rows.map(c => `<tr class="click" onclick="go('cheque/${c.id}')"><td><a class="lnk" href="#/cheque/${c.id}" onclick="event.stopPropagation()"><bdi dir="ltr">${c.id}</bdi> · ${esc(nm(B(c.benId)))}</a><div class="sm mut">${t(c.opType)} · ${esc(UN(c.requesterId))}</div></td>
      <td data-h="${t('Entity')}">${esc(nm(E(c.entityId)))}</td><td class="num" data-h="${t('Amount')}"><div class="b">${payTxt(c)}</div>${(c.payCur || c.currency) !== 'USD' ? `<div class="sm mut">${M(usdOf(c), 'USD')}</div>` : ''}</td>
      <td data-h="${t('Due date')}" style="white-space:nowrap">${dueTxt(c)}</td><td data-h="${t('Stage')}">${chip(c.status)}</td></tr>`).join('')}
-   </tbody></table></div>${pager(key, p)}`;
+   </tbody></table></div>${spPager(key, pg, total)}`;
+}
+/** A cheque list read from the server one page at a time. Tabs, search and filters are applied by the server, in SQL. */
+function chqParams(key, list) {
+  const f = F(key);
+  const p = { list, tab: f.tab || '', size: f.size };
+  if (f.q.trim()) p.q = f.q.trim().slice(0, 100);
+  if (f.ent) p.ent = f.ent; if (f.cur) p.cur = f.cur; if (f.from) p.from = f.from; if (f.to) p.to = f.to; if (f.op) p.op = f.op;
+  return p;
 }
 function chqList(key, list, tabs, empty) {
   const f = F(key, { tab: tabs[0].k });
-  const tab = tabs.find(x => x.k === f.tab) || tabs[0];
-  const q = f.q.trim().toLowerCase();
-  let rows = list.filter(tab.f);
-  if (q) rows = rows.filter(c => (c.id + ' ' + B(c.benId).nameEn + ' ' + (B(c.benId).nameAr || '') + ' ' + U(c.requesterId).fullName + ' ' + (U(c.requesterId).fullNameAr || '') + ' ' + (c.issue ? c.issue.no : '') + ' ' + (c.docNo || '') + ' ' + (c.reason || '')).toLowerCase().includes(q));
-  if (f.ent) rows = rows.filter(c => String(c.entityId) === f.ent);
-  if (f.cur) rows = rows.filter(c => (c.payCur || c.currency) === f.cur || c.currency === f.cur);
-  if (f.from || f.to) rows = rows.filter(c => inRange(f, c.dueDate));
-  if (tab.sort) rows = rows.slice().sort(tab.sort);
-  S.lastRows = rows;
-  return `<div class="tabs" role="tablist">${tabs.map(x => `<button type="button" role="tab" aria-selected="${x === tab}" class="tab ${x === tab ? 'on' : ''}" onclick="setF('${key}','tab','${x.k}')">${esc(x.label)} <b>${list.filter(x.f).length}</b></button>`).join('')}</div>
+  const tab = tabs.find(x => x.k === f.tab) || tabs[0]; f.tab = tab.k;
+  const pg = spGet(key, '/api/cheques', chqParams(key, list));
+  if (pg) S.lastList = { key, list };
+  const cnt = k => pg && pg.counts && pg.counts[k] != null ? N(pg.counts[k]) : '';
+  const filtered = f.q.trim() || f.ent || f.cur || f.from || f.to || f.op;
+  const total = pg && pg.counts && !filtered ? pg.counts[tab.k] : null;
+  return `<div class="tabs" role="tablist">${tabs.map(x => `<button type="button" role="tab" aria-selected="${x === tab}" class="tab ${x === tab ? 'on' : ''}" onclick="setF('${key}','tab','${x.k}')">${esc(x.label)} <b>${cnt(x.k)}</b></button>`).join('')}</div>
    <div class="card flat"><div class="fbar">${searchBox(key, t('Filter this list'))}
      <select class="in" aria-label="${t('Entity')}" onchange="setF('${key}','ent',this.value)"><option value="">${t('All entities')}</option>${D.entities.map(e => `<option value="${e.id}" ${String(e.id) === f.ent ? 'selected' : ''}>${esc(nm(e))}</option>`).join('')}</select>
      <select class="in" aria-label="${t('Currency')}" onchange="setF('${key}','cur',this.value)"><option value="">${t('All currencies')}</option>${CURS.map(c => `<option ${c === f.cur ? 'selected' : ''}>${c}</option>`).join('')}</select>
      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="sm mut">${t('Due')}</span><div style="width:150px">${dateIn('df_' + key, f.from, `aria-label="${t('Due from')}" onchange="setF('${key}','from',pd(this.value))"`)}</div><span class="sm mut">${t('to')}</span><div style="width:150px">${dateIn('dt_' + key, f.to, `aria-label="${t('Due to')}" onchange="setF('${key}','to',pd(this.value))"`)}</div></div>
-     <button class="btn btn-o btn-sm" onclick="exportCheques()">${ic('dl')}${t('Export to Excel')}</button>
-   </div>${chqTable(key, rows, empty)}</div>`;
+     ${f.op ? `<span class="chip c-2nd">${t('Contract')} <bdi dir="ltr">${esc(f.op)}</bdi> <button type="button" class="lnk" aria-label="${t('Clear')}" onclick="setF('${key}','op','')">×</button></span>` : ''}
+     <button class="btn btn-o btn-sm" onclick="exportCheques('${key}','${list}')">${ic('dl')}${t('Export to Excel')}</button>
+   </div>${!pg ? spLoading() : pg.err ? `<div class="empty late">${esc(tErr(pg.err))}</div>` : chqTable(key, pg.rows, empty, pg, total)}</div>`;
 }
-function exportCheques() {
-  const rows = S.lastRows || [];
+async function exportCheques(key, list) {
+  const p = chqParams(key, list); delete p.size;
+  toast(t('Preparing the export…'));
+  const rows = await spAll('/api/cheques', p, 10000); if (!rows) return;
   csv('cheques', ['Reference', 'Stage', 'Beneficiary', 'Entity', 'Operation type', 'Purpose', 'Contract amount', 'Contract currency', 'Cheque amount', 'Payment currency', 'USD equivalent', 'Due date', 'Document', 'Document date', 'Requested by', 'Department', 'Approved by', 'Approval rate date', 'Cheque no.', 'Account', 'Issued by', 'Cleared/returned', 'Clearing rate date', 'Realised FX difference'],
     rows.map(c => [c.id, stageName(c.status), B(c.benId).nameEn, E(c.entityId).nameEn, c.opType, c.purpose, c.amount, c.currency, c.payAmt ?? '', c.payCur, round(usdOf(c), 'USD'), fd(c.dueDate), [c.docType, c.docNo].filter(Boolean).join(' '), fd(c.docDate),
       U(c.requesterId).fullName, Dp(c.deptId).nameEn, c.appr ? c.appr.by : '', c.appr ? fd(c.appr.rateDate) : '', c.issue ? c.issue.no : '', c.issue ? c.issue.bank : '', c.issue ? c.issue.by : '', c.closed ? c.closed.status + ' ' + fd(c.closed.at) : '', c.closed ? fd(c.closed.rateDate) : '', c.closed && c.closed.fxDiff != null ? c.closed.fxDiff : '']));
@@ -149,7 +156,7 @@ function chequesPage() {
   if (!has('cheques')) return denied();
   const sc = S.user.scope;
   return `<div class="phead"><div><h1 class="h1">${sc === 'all' ? t('All cheques') : sc === 'dept' ? t('Department cheques') : t('Cheques')}</h1><div class="sub2">${sc === 'dept' ? t('Requests raised in your department, by stage') : t('Every request and cheque, by stage')}</div></div></div>` +
-    chqList('all', visible(), [
+    chqList('all', 'all', [
       { k: 'all', label: t('All'), f: () => true },
       { k: 'p1', label: t('Pending CFO'), f: c => c.status === 'Pending' },
       { k: 'p2', label: t('Second approval'), f: c => c.status === 'Pending2' },
@@ -163,7 +170,7 @@ function minePage() {
   const box = acts.length ? `<section class="card act"><h2 class="h3" style="color:var(--ydark)">${t('Action needed from you')}</h2>${acts.map(x => `<div class="task"><div style="flex:1 1 240px"><bdi class="b" dir="ltr">${x.c.id}</bdi> · ${esc(nm(B(x.c.benId)))} · ${payTxt(x.c)}
      <div class="sm mut">${x.kind === 'recv' ? t('{n} issued this cheque to you. Confirm when you have it.', { n: esc(byN(x.c.issue.by)) }) : t('Confirm when you hand it to the beneficiary.')}</div></div><a class="btn btn-y btn-sm" href="#/cheque/${x.c.id}">${x.act}</a></div>`).join('')}</section>` : '';
   return `<div class="phead"><div><h1 class="h1">${t('My requests')}</h1><div class="sub2">${t('Every request you raised and where it is now')}</div></div><a class="btn btn-y" href="#/new">${ic('plus')}${t('New request')}</a></div>${box}` +
-    chqList('mine', my, [
+    chqList('mine', 'mine', [
       { k: 'all', label: t('All'), f: () => true },
       { k: 'wait', label: t('Waiting approval'), f: c => c.status === 'Pending' || c.status === 'Pending2' },
       { k: 'ap', label: t('Being issued'), f: c => c.status === 'Approved' },
@@ -177,12 +184,12 @@ function approvalsPage() {
   const a1 = can.approve(), a2 = can.approve2(), any = !a1 && !a2; // view only: both stages
   const list = visible().filter(c => ((a1 || any) && c.status === 'Pending') || ((a2 || any) && c.status === 'Pending2'));
   return `<div class="phead"><div><h1 class="h1">${t('Approvals')}</h1><div class="sub2">${a2 && !a1 ? t('Second approval: above the limit, related party, or paid before the request.') : t('First approval: the rate of the document date is locked and saved with the cheque.')}</div></div></div>` +
-    chqList('appr', list, [{ k: 'mine', label: t('Waiting for me'), f: c => c.requesterId !== me && !(c.appr && c.appr.byId === me) }, { k: 'all', label: t('All waiting'), f: () => true }], t('No requests are waiting.'));
+    chqList('appr', 'appr', [{ k: 'mine', label: t('Waiting for me'), f: c => c.requesterId !== me && !(c.appr && c.appr.byId === me) }, { k: 'all', label: t('All waiting'), f: () => true }], t('No requests are waiting.'));
 }
 function issuePage() {
   if (!has('issue')) return denied();
   return `<div class="phead"><div><h1 class="h1">${t('Issue cheques')}</h1><div class="sub2">${t('Approved requests to issue, and cheques being followed up')}</div></div></div>` +
-    chqList('iss', visible(), [
+    chqList('iss', 'iss', [
       { k: 'ap', label: t('To issue'), f: c => c.status === 'Approved' },
       { k: 'req', label: t('With requesters'), f: c => ['Posted', 'Received'].includes(c.status) },
       { k: 'ben', label: t('With beneficiary'), f: c => c.status === 'Delivered', sort: (a, b) => a.dueDate < b.dueDate ? -1 : 1 },
@@ -193,7 +200,7 @@ function followupPage() {
   const L = visible().filter(c => ['Approved', 'Posted', 'Received', 'Delivered', 'Returned'].includes(c.status));
   const by = (a, b) => a.dueDate < b.dueDate ? -1 : 1, al = D.settings.alertDays;
   return `<div class="phead"><div><h1 class="h1">${t('Due & follow-up')}</h1><div class="sub2">${t('Open cheques, soonest first. The alert window is {n} days.', { n: al })}</div></div></div>` +
-    chqList('fu', L, [
+    chqList('fu', 'fu', [
       { k: 'od', label: t('Overdue'), f: c => c.status !== 'Returned' && daysUntil(c.dueDate) < 0, sort: by },
       { k: 'wk', label: t('Due soon'), f: c => c.status !== 'Returned' && daysUntil(c.dueDate) >= 0 && daysUntil(c.dueDate) <= al, sort: by },
       { k: 'later', label: t('Later'), f: c => c.status !== 'Returned' && daysUntil(c.dueDate) > al, sort: by },
@@ -264,10 +271,9 @@ function nfSummary() {
 }
 function refreshSum() { const e = document.getElementById('nf_sum'); if (e) e.innerHTML = nfSummary();
   const w = document.getElementById('nf_kw'); if (w && S.nf) w.innerHTML = FINANCING.includes(S.nf.opType) ? kWarnBox(kWarns(S.nf.lines.map(l => l.opNo), S.nf.dueDate)) : ''; const r = document.getElementById('nf_rem'); if (r) r.classList.toggle('hide', !nfCalc().partial); }
-function contractRemaining(k) {
-  const used = D.cheques.filter(c => !['Rejected', 'Cancelled'].includes(c.status)).flatMap(c => c.lines).filter(l => l.opNo === k.opNo).reduce((a, l) => a + (+l.principal || 0), 0);
-  return +k.principal - used;
-}
+/** Contract usage over every cheque, totalled by the server (D.kUse), so no full cheque list is needed. */
+function kUseOf(op) { return (D.kUse || []).find(x => x.opNo === op) || { used: 0, paid: 0, n: 0 }; }
+function contractRemaining(k) { return +k.principal - (+kUseOf(k.opNo).used || 0); }
 function newRequestPage() {
   if (!can.request()) return denied();
   if (!S.nf) S.nf = nfNew();
@@ -378,7 +384,8 @@ async function submitReq(confirmDup, confirmK) {
 
 /* =================== THE CHEQUE PAGE =================== */
 function chequePage(id) {
-  const c = D.cheques.find(x => x.id === id);
+  const c = CQ(id);
+  if (c === null) return `<div class="card">${spLoading()}</div>`;
   if (!c) return `<div class="card empty">${t('This cheque is not available to you.')}</div>`;
   const b = B(c.benId), ent = E(c.entityId), fc = (c.appr && c.appr.funcCur) || ent.funcCur;
   const big = c.payAmt != null ? M(c.payAmt, c.payCur) : M(c.amount, c.currency);
@@ -605,13 +612,9 @@ function entriesCard(c) {
 }
 
 /* ----- what happens next: the action panel ----- */
-function nextFree(accId) {
-  const used = new Set(D.cheques.filter(c => c.issue && c.issue.accountId === accId).map(c => String(Number(c.issue.no))));
-  const vd = new Set(D.voided.filter(v => v.accountId === accId).map(v => String(v.number)));
-  for (const b of D.books.filter(b => b.accountId === accId && b.active).sort((a, b) => a.from - b.from))
-    for (let n = b.from; n <= b.to && n < b.from + 100000; n++) if (!used.has(String(n)) && !vd.has(String(n))) return n;
-  return null;
-}
+/** Next unused cheque number of an account, worked out by the server over every issued and voided number. */
+function acctUseOf(id) { return (D.acctUse || []).find(x => x.id === id) || { issued: 0, next: null }; }
+function nextFree(accId) { return acctUseOf(accId).next ?? null; }
 function panel(title, body, buttons) {
   return `<section class="card act"><h2 class="h3">${title}</h2>${body}${buttons ? `<div style="display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:16px">${buttons}</div>` : ''}</section>`;
 }

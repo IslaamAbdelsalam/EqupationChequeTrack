@@ -18,6 +18,96 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 - **Telegram:** daily digest and stage alerts (optional, can be hidden).
 - **Upgrade:** an existing v1 database is upgraded in place on start-up (`Schema.cs`); old cheques are kept.
 
+## Security (v3.4)
+
+**Secrets stay on the server**
+- The Telegram bot token, SMTP password and alert-link key are read from environment variables when set (`TELEGRAM_BOT_TOKEN`, `SMTP_PASSWORD`, `CRON_KEY`). Otherwise they come from the values saved in Settings, which are encrypted with ASP.NET Data Protection.
+- The browser only ever receives "set / not set". The alert link is shown masked. The full link is returned only by `/api/secret/cron`, to Telegram or Settings admins, and each view is written to the audit log.
+- `appsettings.json` has no connection string. Put it in Azure App Service > Connection strings (`ChequeDb`).
+- `.env`, `.env.*`, certificates and publish profiles are git-ignored. `.env.example` lists the variable names only.
+
+**Input validation on every API call** (`Security.cs`)
+- Only GET, HEAD and POST are accepted.
+- POSTs must be JSON and must carry the `X-Requested-With: ChequeTrack` header (CSRF).
+- Body size limits: 64 KB per call, 1 MB for settings, 72 MB for a request with attachments.
+- JSON shape checks:
+  - depth ≤ 10 and ≤ 5,000 fields;
+  - field names must be plain identifiers;
+  - strings up to 4,000 characters (file data and logo excepted);
+  - no control or bidi-override characters;
+  - numbers up to 30 digits.
+- `/api/act` accepts only the known action names. Before any action code runs, every action checks:
+  - cheque reference format;
+  - real calendar dates;
+  - month format;
+  - number ranges;
+  - non-negative whole ids.
+- Query strings are limited to 2,048 characters, and each value to 300 printable characters.
+- Sign-in, setup, two-step code and reset fields have length and format limits.
+
+**Rate limiting** (built into ASP.NET Core, per signed-in user, or per IP when signed out)
+
+| What | Limit |
+|---|---|
+| Sign-in, two-step code, setup, reset link | 10 a minute per IP (plus the account lock after failed attempts) |
+| Forgot password | 5 per 15 minutes per IP |
+| Saving (`/api/act`) | 60 a minute per user |
+| Reading lists and pages | 180 a minute per user |
+| Attachments | 60 a minute per user |
+| Notification polling | 20 a minute per user |
+| Daily alert link | 12 an hour |
+| Every API call from one IP | 400 a minute |
+
+A refused call gets `429` and a `Retry-After` header.
+
+**Robots and heavy attacks**
+- Known scanner tools (sqlmap, nikto, nuclei, …) get `403`.
+- Probe paths (`/.env`, `/.git`, `/wp-admin`, `*.php`, path traversal, `<script>`, `union select`, …) get `404`.
+- Repeated probes or rate-limit hits ban the IP for an hour. So does a flood of more than 300 requests in 10 seconds.
+- API calls without a user agent are refused.
+- `robots.txt` disallows everything, and API answers carry `X-Robots-Tag: noindex`.
+- Kestrel limits protect against slow-client (slowloris) and oversize attacks:
+  - header size and count;
+  - minimum data rates;
+  - 15-second header timeout;
+  - maximum connections.
+- Headers:
+  - `Content-Security-Policy` (only this site's own scripts, plus Google Fonts);
+  - HSTS and HTTPS redirect in production;
+  - `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: no-referrer`;
+  - Permissions-Policy and cross-origin isolation headers.
+  - Downloads get a sandboxing CSP.
+- The session cookie is `__Host-chq.auth`: HTTPS only, HttpOnly, SameSite=Strict. Tests over plain http need `ASPNETCORE_ENVIRONMENT=Development`.
+- Client IPs come from Azure's `X-Forwarded-For`, using only the last hop, so a client cannot spoof its address.
+
+**Row-level security (RLS) in SQL Server** (`Rls.cs`)
+- Policy `rls.ChequePolicy` filters `Cheques`, `ChequeLines`, `Attachments` and `Comments` by the caller's scope:
+  - `all`: every row;
+  - `dept`: the user's department plus the user's own requests;
+  - `own`: only the user's own requests.
+- Every endpoint that returns cheque data runs inside `Rls.As(user, scope)`. An EF Core connection interceptor sets `SESSION_CONTEXT` on each connection it opens. So even a query that forgot its filter cannot return other people's rows.
+- Background work and saving checks run as `sys` and see every row. Examples: next cheque number, duplicate checks, contract totals.
+- It is installed at start-up. If it can't be installed, the app logs an error and still runs with the code checks. `SECURITY_RLS=off` removes it (rollback only).
+
+**Pagination with cursors: no screen downloads a whole table**
+- `/api/state` now sends:
+  - the **working set**: open cheques plus those closed in the last 190 days, capped at 3,000;
+  - the last 400 days of rates and the last 500 voided numbers;
+  - posted-entry marks only for the cheques sent;
+  - **server-computed totals** instead of full lists: contract usage (`kUse`), next free cheque number and usage per account and chequebook (`acctUse`, `bookUse`), and requests per department and entity (`deptUse`, `entUse`).
+- Paged endpoints use keyset cursors (opaque, validated) and **fixed page sizes of 10, 25, 50 or 100**. Report and export loaders read 500 rows a request.
+  - `GET /api/cheques?list=all|mine|appr|iss|fu|report&tab=&q=&ent=&cur=&from=&to=&op=&size=&cursor=`: tabs, search and filters run in SQL, and each tab count is a `COUNT` query.
+  - `GET /api/cheque/{id}`: one cheque, for links to cheques outside the working set.
+  - `GET /api/audit?q=&user=&from=&to=&size=&cursor=` and `GET /api/rates?from=&to=&size=&cursor=`.
+  - `GET /api/voided?account=&size=&cursor=`.
+- Every table in the app has paging and a filter.
+  - Server-paged: cheque lists, audit log, exchange rates, voided numbers.
+  - Paged on screen: reference tables (banks, accounts, chequebooks, beneficiaries, entities, departments, users, roles, contracts) and report tables.
+- Reports, journal entries and payments on account load "open cheques plus everything since a date" (default: 1 January of last year, changeable on the page). They read it in pages of 500, capped at 20,000 rows.
+- Exports read page by page: up to 10,000 cheques or 20,000 audit lines.
+
+**Tests:** `tests/e2e_security.py` checks headers, validation, CSRF, paging and cursors, scope and RLS, bot blocking and the sign-in rate limit. Run it against a test server.
+
 ## What's new in v3.3
 
 - **Notifications bell** in the top bar of every screen, with a red count. It opens a summary panel:

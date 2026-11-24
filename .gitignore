@@ -16,3 +16,11 @@ publish/
 appsettings.Development.json
 appsettings.*.local.json
 .env
+.env.*
+!.env.example
+*.pfx
+*.pem
+*.key
+secrets*.json
+*.publishsettings
+*.PublishSettings

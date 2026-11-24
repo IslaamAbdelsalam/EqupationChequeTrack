@@ -283,8 +283,17 @@ public class SettingsStore
         lock (_lk) { _json = json; _jsonExp = DateTime.UtcNow.AddSeconds(60); }
     }
 
+    // Secrets live on the server only. An environment variable (Azure App Service > Environment variables) wins over
+    // the encrypted copy saved from the Settings screen, so production secrets never need to be typed into the app.
+    static string Env(string k) { var v = Environment.GetEnvironmentVariable(k); return string.IsNullOrWhiteSpace(v) ? null : v.Trim(); }
+    public static bool TokenFromEnv => Env("TELEGRAM_BOT_TOKEN") != null;
+    public static bool SmtpPassFromEnv => Env("SMTP_PASSWORD") != null;
+    /// <summary>Key of the daily-alert URL: CRON_KEY if set, otherwise the random key saved at setup.</summary>
+    public string CronKey(AppSettings s) => Env("CRON_KEY") ?? s.CronKey ?? "";
+
     public string Token(AppSettings s)
     {
+        var env = Env("TELEGRAM_BOT_TOKEN"); if (env != null) return env;
         if (string.IsNullOrEmpty(s.BotTokenEnc)) return "";
         try { return _p.Unprotect(s.BotTokenEnc); } catch { return ""; }
     }
@@ -292,6 +301,7 @@ public class SettingsStore
 
     public string SmtpPass(AppSettings s)
     {
+        var env = Env("SMTP_PASSWORD"); if (env != null) return env;
         if (string.IsNullOrEmpty(s.Smtp?.PassEnc)) return "";
         try { return _m.Unprotect(s.Smtp.PassEnc); } catch { return ""; }
     }

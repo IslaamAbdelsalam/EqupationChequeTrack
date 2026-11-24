@@ -33,13 +33,16 @@ function ratesPage() {
     <div class="fgrid">${fld('r_d', t('Date'), dateIn('r_d', e.date || today()), 1)}${fld('r_q', t('1 USD in QAR'), inp('r_q', e.QAR ?? (r0 ? r0.QAR : ''), 'inputmode="decimal" dir="ltr"'), 1)}
      ${fld('r_s', t('1 USD in SDG'), inp('r_s', e.SDG ?? '', 'inputmode="decimal" dir="ltr"'), 1)}${fld('r_src', t('Source'), inp('r_src', e.source ?? (r0 ? r0.source : ''), `placeholder="${t('e.g. Central Bank of Sudan')}"`), 1)}</div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">${e.id ? `<button class="btn btn-o" onclick="S.rEdit=null;render()">${t('Cancel')}</button>` : ''}<button class="btn btn-y" onclick="saveRate(false)">${t('Save rate')}</button></div></section>` : '';
-  const f = F('rates'), p = pageOf('rates', L);
-  const rows = p.rows.map((r, i) => {
-    const prev = L[p.st + i + 1], d = prev ? pct(+r.SDG, +prev.SDG) : 0;
+  // the table reads its rows from the server one page at a time, with the date filter applied there
+  const f = F('rates'), rp = { size: f.size }; if (f.from) rp.from = f.from; if (f.to) rp.to = f.to;
+  const pg = spGet('rates', '/api/rates', rp), PR = pg ? pg.rows : [];
+  S.rRows = new Map(PR.map(r => [r.id, r]));
+  const rows = PR.map((r, i) => {
+    const prev = PR[i + 1] || L.find(x => x.date < r.date), d = prev ? pct(+r.SDG, +prev.SDG) : 0;
     return [FD(r.date), `<bdi dir="ltr">${rnum(r.QAR)}</bdi>`, `<bdi dir="ltr">${rnum(r.SDG)}</bdi>`,
       prev ? `<span class="${Math.abs(d) > +D.settings.rateAlertPct ? 'late' : 'mut'}"><bdi dir="ltr">${d > 0 ? '+' : ''}${d.toFixed(2)}%</bdi></span>` : '—',
       esc(r.source || '—'), `${esc(byN(r.setBy))}<div class="sm mut">${FD(r.setAt)}</div>`,
-      r.locked ? `<span class="chip c-lock">${ic('lock')}${t('Locked')}</span>` : canFix ? `<button class="btn btn-o btn-sm" onclick="S.rEdit=D.rates.find(x=>x.id==='${r.id}');render();scrollTo(0,0)">${ic('edit')}${t('Correct')}</button>` : `<span class="chip c-open">${t('Not used yet')}</span>`];
+      r.locked ? `<span class="chip c-lock">${ic('lock')}${t('Locked')}</span>` : canFix ? `<button class="btn btn-o btn-sm" onclick="S.rEdit=S.rRows.get('${esc(js(r.id))}');render();scrollTo(0,0)">${ic('edit')}${t('Correct')}</button>` : `<span class="chip c-open">${t('Not used yet')}</span>`];
   });
   return phead(t('Exchange rates'), t('Rates per 1 USD. Each cheque keeps the rate of its approval, issue and clearing.')) +
     `<div class="kpis">${kpi(t('Latest SDG rate'), r0 ? `<bdi dir="ltr">${rnum(r0.SDG)}</bdi>` : '—', r0 ? FD(r0.date) : '')}
@@ -48,7 +51,8 @@ function ratesPage() {
      ${kpi(t('Latest QAR rate'), r0 ? `<bdi dir="ltr">${rnum(r0.QAR)}</bdi>` : '—')}</div>
     ${form}
     <section class="card"><h2 class="h3">${t('SDG per USD')}</h2><div class="sm mut" style="margin:2px 0 10px">${t('Last {n} rates · hover a point for the detail', { n: pts.length })}</div>${lineChart(pts, { plain: v => rnum(Math.round(v)), title: t('SDG per USD') })}</section>
-    <div class="card flat">${tbl([t('Date'), { l: t('QAR'), n: 1 }, { l: t('SDG'), n: 1 }, { l: t('Change'), n: 1 }, t('Source'), t('Entered by'), ''], rows, t('No exchange rate yet.'))}${pager('rates', p)}</div>`;
+    <div class="card flat"><div class="fbar">${dFilter('rates', 'from', t('From'), f.from)}${dFilter('rates', 'to', t('to'), f.to)}</div>
+     ${!pg ? spLoading() : pg.err ? `<div class="empty late">${esc(tErr(pg.err))}</div>` : tbl([t('Date'), { l: t('QAR'), n: 1 }, { l: t('SDG'), n: 1 }, { l: t('Change'), n: 1 }, t('Source'), t('Entered by'), ''], rows, t('No exchange rate yet.')) + spPager('rates', pg, f.from || f.to ? null : pg.total)}</div>`;
 }
 async function saveRate(confirm) {
   const body = { date: dval('r_d'), QAR: val('r_q'), SDG: val('r_s'), source: val('r_src'), confirm: !!confirm };
@@ -59,11 +63,12 @@ async function saveRate(confirm) {
 
 /* =================== CONTRACTS =================== */
 function kStats(k) {
+  // totals over every cheque come from the server; the list shows the recent ones (all of them: "Show all")
+  const u = kUseOf(k.opNo), used = +u.used || 0, paid = +u.paid || 0;
   const cs = D.cheques.filter(c => !['Rejected', 'Cancelled'].includes(c.status) && c.lines.some(l => l.opNo === k.opNo));
-  let used = 0, paid = 0;
-  cs.forEach(c => c.lines.filter(l => l.opNo === k.opNo).forEach(l => { used += +l.principal || 0; if (c.status === 'Cleared') paid += +l.principal || 0; }));
-  return { used, paid, remaining: +k.principal - used, cheques: cs };
+  return { used, paid, remaining: +k.principal - used, cheques: cs, count: +u.n || cs.length };
 }
+function kShowAll(op) { closeM(); const f = F('all', { tab: 'all' }); f.tab = 'all'; f.op = op; f.page = 1; go('cheques'); }
 const KCLOSE = ['Fully settled', 'Not renewed', 'Cancelled', 'Other'];
 function addMonths(iso, n) {
   const d = new Date((iso || today()) + 'T12:00:00Z'), day = d.getUTCDate();
@@ -104,7 +109,7 @@ function contractsPage() {
      <section class="card"><h2 class="h3">${t('Remaining principal by financier')}</h2><div class="sm mut" style="margin:2px 0 10px">${t('USD at the latest rate')}</div>${hbar(Object.entries(byFin).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, title: t('Remaining principal by financier') })}</section></div>` : ''}
     <div class="tabs" role="tablist">${tabs.map(x => `<button type="button" role="tab" aria-selected="${x === tab}" class="tab ${x === tab ? 'on' : ''}" onclick="setF('k','tab','${x.k}')">${esc(x.label)} <b>${L.filter(x.f).length}</b></button>`).join('')}</div>
     <div class="card flat"><div class="fbar">${searchBox('k', t('Operation no. or financier'))}<select class="in" onchange="setF('k','ent',this.value)"><option value="">${t('All entities')}</option>${D.entities.map(e => `<option value="${e.id}" ${String(e.id) === f.ent ? 'selected' : ''}>${esc(nm(e))}</option>`).join('')}</select></div>
-     ${tbl([t('Operation'), t('Entity'), { l: t('Principal'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Expiry'), t('Follow-up'), ''], trs, tab.k === 'all' ? t('No contracts registered yet.') : t('Nothing here.'), 'cards')}</div>`;
+     ${ptbl('kt', [t('Operation'), t('Entity'), { l: t('Principal'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Expiry'), t('Follow-up'), ''], trs, tab.k === 'all' ? t('No contracts registered yet.') : t('Nothing here.'), 'cards', { noSearch: true })}</div>`;
 }
 function contractModal(id) {
   const k = D.contracts.find(x => x.id === id) || { currency: 'USD', entityId: (D.entities[0] || {}).id, startDate: today(), noticeDays: 30 };
@@ -190,7 +195,7 @@ function kModal(id) {
     ed && !x.closed ? `<button class="btn btn-o btn-sm" onclick="kRenewModal(${k.id})">${t('Renew')}</button><button class="btn btn-o btn-sm" onclick="extendModal(${k.id})">${t('Extend')}</button>` : '',
     ed ? `<button class="btn btn-o btn-sm" onclick="contractModal(${k.id})">${ic('edit')}${t('Edit')}</button>` : '',
     ed ? (x.closed ? `<button class="btn btn-o btn-sm" onclick="kReopenModal(${k.id})">${t('Reopen')}</button>` : `<button class="btn btn-o btn-sm" onclick="kCloseModal(${k.id})">${t('Close')}</button>`) : '',
-    has('contracts', 'delete') && !s.cheques.length ? `<button class="btn btn-r btn-sm" onclick="confirmBox('${js(t('Delete contract'))}','${js(t('Delete {n}?', { n: k.opNo }))}','${js(t('Delete'))}',()=>act('delContract',{id:${k.id}},'${js(t('Deleted'))}',{after:closeM}),true)">${ic('trash')}${t('Delete')}</button>` : ''].join('');
+    has('contracts', 'delete') && !s.count ? `<button class="btn btn-r btn-sm" onclick="confirmBox('${js(t('Delete contract'))}','${js(t('Delete {n}?', { n: k.opNo }))}','${js(t('Delete'))}',()=>act('delContract',{id:${k.id}},'${js(t('Deleted'))}',{after:closeM}),true)">${ic('trash')}${t('Delete')}</button>` : ''].join('');
   modal(`${mhead(t('Contract {o}', { o: k.opNo }), esc(nm(B(k.financierId))) + ' · ' + esc(nm(E(k.entityId))))}<div class="mb">
    <div class="pairs" style="margin-top:0">${pair(t('Expiry date'), `${FD(kExp(k))} ${kChip(k)}`)}${pair(t('Start following up'), t('{n} days before expiry', { n: k.noticeDays || 30 }))}
     ${pair(t('Follow-up by'), k.ownerId ? esc(UN(k.ownerId)) : `<span class="mut">${t('Not assigned')}</span>`)}${pair(t('Next follow-up'), k.followUpDate ? FD(k.followUpDate) : '—')}
@@ -198,16 +203,17 @@ function kModal(id) {
     ${x.closed ? pair(t('Closed'), `${esc(kLogText({ kind: 'close', reason: (k.closeReason || '').split(' · ')[0], note: (k.closeReason || '').split(' · ').slice(1).join(' · ') }))} · ${esc(byN(k.closedBy || ''))} ${FD(k.closedAt)}`) : ''}</div>
    ${btns ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">${btns}</div>` : ''}
    <h3 class="h3" style="margin:18px 0 12px">${t('Follow-up history')}</h3>${log.slice().reverse().map(e => `<div class="tl"><div>${esc(kLogText(e))} · <span class="mut">${esc(byN(e.by))}</span></div><div class="sm mut">${FD(e.at)}</div></div>`).join('') || `<div class="mut">${t('No history.')}</div>`}
-   <h3 class="h3" style="margin:16px 0 8px">${t('Requests against this contract')}</h3>${s.cheques.map(c => `<div class="task"><a class="lnk" href="#/cheque/${c.id}" onclick="closeM()"><bdi dir="ltr">${c.id}</bdi></a> ${chip(c.status)} <span class="sm mut">${payTxt(c)}</span></div>`).join('') || `<div class="mut">${t('None yet.')}</div>`}</div>`, true);
+   <h3 class="h3" style="margin:16px 0 8px;display:flex;justify-content:space-between;gap:8px;align-items:center">${t('Requests against this contract')}${s.count && has('cheques') ? `<button class="btn btn-o btn-sm" onclick="kShowAll('${esc(js(k.opNo))}')">${t('Show all {n}', { n: N(s.count) })}</button>` : ''}</h3>${s.cheques.slice(0, 20).map(c => `<div class="task"><a class="lnk" href="#/cheque/${c.id}" onclick="closeM()"><bdi dir="ltr">${c.id}</bdi></a> ${chip(c.status)} <span class="sm mut">${payTxt(c)}</span></div>`).join('') || `<div class="mut">${t('None yet.')}</div>`}</div>`, true);
 }
 const logModal = kModal;
 
 /* =================== PAYMENTS ON ACCOUNT =================== */
 function poaPage() {
   if (!has('poa')) return denied();
+  if (!repData()) return phead(t('Payments on account'), '', '') + repBar() + `<div class="card">${spLoading()}</div>`;
   const L = visible().filter(c => isPoa(c) && !['Rejected', 'Cancelled'].includes(c.status));
   const open = L.filter(c => !c.poa), over = open.filter(c => daysUntil(c.poaSettleDate) < 0);
-  return phead(t('Payments on account'), t('Advance payments waiting for the invoice that settles them')) +
+  return phead(t('Payments on account'), t('Advance payments waiting for the invoice that settles them')) + repBar() +
     `<div class="kpis">${kpi(t('Open'), N(open.length))}${kpi(t('Overdue to settle'), `<span class="${over.length ? 'late' : ''}">${N(over.length)}</span>`)}${kpi(t('Open value (USD)'), M(open.reduce((a, c) => a + usdOf(c), 0), 'USD'))}${kpi(t('Settled'), N(L.length - open.length))}</div>` +
     chqList('poa', L, [{ k: 'open', label: t('Open'), f: c => !c.poa, sort: (a, b) => (a.poaSettleDate || '') < (b.poaSettleDate || '') ? -1 : 1 }, { k: 'od', label: t('Overdue'), f: c => !c.poa && daysUntil(c.poaSettleDate) < 0 }, { k: 'done', label: t('Settled'), f: c => !!c.poa }], t('No payments on account.'));
 }
@@ -216,6 +222,7 @@ function poaPage() {
 const KINDS = ['Issue', 'Revaluation', 'Revaluation reversal', 'Clearing', 'Return', 'Payment on account settled'];
 function entriesPage() {
   if (!has('entries')) return denied();
+  if (!repData()) return phead(t('Journal entries'), '', '') + repBar() + `<div class="card">${spLoading()}</div>`;
   const f = F('je', { kind: '', post: '' });
   let L = visible().flatMap(c => entriesOf(c, f.x ? [f.x] : []));
   if (f.ent) L = L.filter(e => String(e.c.entityId) === f.ent);
@@ -227,7 +234,7 @@ function entriesPage() {
   S.jeRows = L;
   const notPosted = L.filter(e => !postedOf(e.key)).length;
   const p = pageOf('je', L);
-  return phead(t('Journal entries'), t('Built from each cheque. Post them in the accounting system, then mark them here.'), `<button class="btn btn-o" onclick="exportEntries()">${ic('dl')}${t('Export to Excel')}</button>`) +
+  return (phead(t('Journal entries'), t('Built from each cheque. Post them in the accounting system, then mark them here.'), `<button class="btn btn-o" onclick="exportEntries()">${ic('dl')}${t('Export to Excel')}</button>`) + repBar()) +
    `<div class="kpis">${kpi(t('Entries shown'), N(L.length))}${kpi(t('Not posted yet'), `<span class="${notPosted ? 'late' : ''}">${N(notPosted)}</span>`)}${kpi(t('Posted'), N(L.length - notPosted))}</div>
    <div class="card flat"><div class="fbar">${searchBox('je', t('Cheque or beneficiary'))}
     <select class="in" onchange="setF('je','ent',this.value)"><option value="">${t('All entities')}</option>${D.entities.map(e => `<option value="${e.id}" ${String(e.id) === f.ent ? 'selected' : ''}>${esc(nm(e))}</option>`).join('')}</select>
@@ -246,12 +253,13 @@ function exportEntries() {
 const REPORTS = [['overview', 'Overview'], ['outstanding', 'Outstanding & revaluation'], ['realised', 'Realised FX differences'], ['ageing', 'Due & ageing'], ['entity', 'By entity & currency'], ['contracts', 'Contracts & remaining principal'], ['poa', 'Payments on account'], ['prior', 'Payments before request']];
 function reportsPage() {
   if (!has('reports')) return denied();
+  if (!repData()) return phead(t('Reports'), '', '') + repBar() + `<div class="card">${spLoading()}</div>`;
   const f = F('rep', { tab: 'overview' });
   const fn = { overview: repOverview, outstanding: repOutstanding, realised: repRealised, ageing: repAgeing, entity: repEntity, contracts: repContracts, poa: repPoa, prior: repPrior }[f.tab] || repOverview;
   const r = fn(f);
   S.repCsv = r.csv;
   return phead(t('Reports'), t('Figures in USD use the rate saved with each cheque unless the report says otherwise.'), `<div style="display:flex;gap:8px">${r.csv ? `<button class="btn btn-o" onclick="csv(S.repCsv.name,S.repCsv.head,S.repCsv.rows)">${ic('dl')}${t('Export to Excel')}</button>` : ''}<button class="btn btn-o" onclick="print()">${ic('print')}${t('Print')}</button></div>`) +
-   `<div class="ul-tabs" role="tablist">${REPORTS.map(([k, l]) => `<button role="tab" aria-selected="${k === f.tab}" class="${k === f.tab ? 'on' : ''}" onclick="setF('rep','tab','${k}')">${t(l)}</button>`).join('')}</div>
+   repBar() + `<div class="ul-tabs" role="tablist">${REPORTS.map(([k, l]) => `<button role="tab" aria-selected="${k === f.tab}" class="${k === f.tab ? 'on' : ''}" onclick="setF('rep','tab','${k}')">${t(l)}</button>`).join('')}</div>
    ${r.filters ? `<div class="card" style="padding:14px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">${r.filters}</div>` : ''}
    ${r.kpis ? `<div class="kpis">${r.kpis}</div>` : ''}${r.charts ? `<div class="charts">${r.charts}</div>` : ''}${r.table ? `<div class="card flat">${r.table}</div>` : ''}`;
 }
@@ -298,7 +306,7 @@ function repOutstanding(f) {
     filters: entSel(f) + dFilter('rep', 'x', t('Report date'), d) + (r ? `<span class="sm mut">${t('Rate of {d}: 1 USD = {s} SDG, {q} QAR', { d: fd(r.date), s: rnum(r.SDG), q: rnum(r.QAR) })}</span>` : `<span class="late sm">${t('No rate on or before this date.')}</span>`),
     kpis: kpi(t('Outstanding cheques'), N(rows.length)) + kpi(t('Outstanding value (USD)'), M(rows.reduce((a, x) => a + x.usd, 0), 'USD'), t('at the report-date rate')) + kpi(t('Unrealised FX difference (USD)'), net > 0 ? `<span class="loss">${t('Loss')} ${M(net, 'USD')}</span>` : net < 0 ? `<span class="gain">${t('Gain')} ${M(-net, 'USD')}</span>` : M(0, 'USD')),
     charts: ccard(t('Outstanding by bank account'), t('USD at the report-date rate'), hbar(Object.entries(byAcc).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, title: t('Outstanding by bank account') })),
-    table: tbl([t('Cheque'), t('Entity'), t('Cheque no.'), { l: t('Cheque amount'), n: 1 }, { l: t('Carrying value'), n: 1 }, { l: t('Value at report date'), n: 1 }, { l: t('Difference'), n: 1 }, t('Due date')],
+    table: ptbl('r_out', [t('Cheque'), t('Entity'), t('Cheque no.'), { l: t('Cheque amount'), n: 1 }, { l: t('Carrying value'), n: 1 }, { l: t('Value at report date'), n: 1 }, { l: t('Difference'), n: 1 }, t('Due date')],
       rows.map(x => [`<a class="lnk" href="#/cheque/${x.c.id}"><bdi dir="ltr">${x.c.id}</bdi></a><div class="sm mut">${esc(nm(B(x.c.benId)))}</div>`, esc(nm(E(x.c.entityId))), `<bdi dir="ltr">${esc(x.c.issue.no)}</bdi>`, M(x.c.payAmt, x.p), M(x.carry, x.fc), M(x.now, x.fc), fxSpan(x.diff, x.fc), FD(x.c.dueDate)]), t('No outstanding cheques on this date.'), 'cards'),
     csv: { name: 'outstanding-' + d, head: ['Cheque', 'Beneficiary', 'Entity', 'Cheque no.', 'Account', 'Cheque amount', 'Currency', 'Functional currency', 'Carrying value', 'Value at report date', 'Difference (+ loss / - gain)', 'USD at report date', 'Due date'], rows: rows.map(x => [x.c.id, B(x.c.benId).nameEn, E(x.c.entityId).nameEn, x.c.issue.no, x.c.issue.bank, x.c.payAmt, x.p, x.fc, x.carry, x.now, x.diff, round(x.usd, 'USD'), fd(x.c.dueDate)]) }
   };
@@ -314,7 +322,7 @@ function repRealised(f) {
     kpis: kpi(t('Cheques cleared'), N(rows.length)) + kpi(t('Net FX difference (USD)'), net > 0 ? `<span class="loss">${t('Loss')} ${M(net, 'USD')}</span>` : net < 0 ? `<span class="gain">${t('Gain')} ${M(-net, 'USD')}</span>` : M(0, 'USD'), t('at issue and at clearing')) +
       kpi(t('Cheques with a loss'), N(rows.filter(x => x.iss + x.clr > 0).length)) + kpi(t('Cheques with a gain'), N(rows.filter(x => x.iss + x.clr < 0).length)),
     charts: ccard(t('Realised FX result per month'), t('Last 6 months · USD · gain up, loss down'), signedBars(months.map(m => m.label), mv, { plain: usdT, title: t('Realised FX result per month') })),
-    table: tbl([t('Cheque'), t('Entity'), t('Cleared'), { l: t('At issue'), n: 1 }, { l: t('At clearing'), n: 1 }, { l: t('Total'), n: 1 }], rows.map(x => [`<a class="lnk" href="#/cheque/${x.c.id}"><bdi dir="ltr">${x.c.id}</bdi></a><div class="sm mut">${esc(nm(B(x.c.benId)))}</div>`, esc(nm(E(x.c.entityId))), FD(x.c.closed.at), fxSpan(x.iss, x.fc), fxSpan(x.clr, x.fc), fxSpan(x.iss + x.clr, x.fc)]), t('No cheques cleared in this period.'), 'cards'),
+    table: ptbl('r_real', [t('Cheque'), t('Entity'), t('Cleared'), { l: t('At issue'), n: 1 }, { l: t('At clearing'), n: 1 }, { l: t('Total'), n: 1 }], rows.map(x => [`<a class="lnk" href="#/cheque/${x.c.id}"><bdi dir="ltr">${x.c.id}</bdi></a><div class="sm mut">${esc(nm(B(x.c.benId)))}</div>`, esc(nm(E(x.c.entityId))), FD(x.c.closed.at), fxSpan(x.iss, x.fc), fxSpan(x.clr, x.fc), fxSpan(x.iss + x.clr, x.fc)]), t('No cheques cleared in this period.'), 'cards'),
     csv: { name: 'realised-fx', head: ['Cheque', 'Beneficiary', 'Entity', 'Cleared on', 'Functional currency', 'FX difference at issue', 'FX difference at clearing', 'Total (+ loss / - gain)', 'Total USD'], rows: rows.map(x => [x.c.id, B(x.c.benId).nameEn, E(x.c.entityId).nameEn, fd(x.c.closed.at), x.fc, x.iss, x.clr, x.iss + x.clr, round(x.usd, 'USD')]) }
   };
 }
@@ -327,7 +335,7 @@ function repAgeing(f) {
     filters: entSel(f),
     kpis: kpi(t('Open commitments'), N(L.length)) + kpi(t('Value (USD)'), M(L.reduce((a, c) => a + usdOf(c), 0), 'USD')) + kpi(t('Overdue'), `<span class="${od ? 'late' : ''}">${N(od)}</span>`, M(g[0].v + g[1].v, 'USD')) + kpi(t('Due in 7 days'), N(g[2].x.length), M(g[2].v, 'USD')),
     charts: ccard(t('Commitments by due date'), t('Approved and issued, not cleared · USD · hover for the count'), vbars(g.map(x => x.l), [{ name: t('Due'), values: g.map(x => x.v), color: CH.gold }], { plain: usdT, tipx: i => t('{n} cheques', { n: g[i].x.length }), title: t('Commitments by due date') })),
-    table: tbl([t('Period'), { l: t('Cheques'), n: 1 }, { l: t('Value (USD)'), n: 1 }, t('Cheques')], g.map(x => [x.l, N(x.x.length), M(x.v, 'USD'), x.x.slice(0, 6).map(c => `<a href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a>`).join(', ') + (x.x.length > 6 ? ' …' : '')])),
+    table: ptbl('r_age', [t('Period'), { l: t('Cheques'), n: 1 }, { l: t('Value (USD)'), n: 1 }, t('Cheques')], g.map(x => [x.l, N(x.x.length), M(x.v, 'USD'), x.x.slice(0, 6).map(c => `<a href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a>`).join(', ') + (x.x.length > 6 ? ' …' : '')])),
     csv: { name: 'ageing', head: ['Cheque', 'Beneficiary', 'Entity', 'Stage', 'Due date', 'Days', 'Cheque amount', 'Currency', 'USD'], rows: L.map(c => [c.id, B(c.benId).nameEn, E(c.entityId).nameEn, stageName(c.status), fd(c.dueDate), daysUntil(c.dueDate), c.payAmt ?? c.amount, c.payCur, round(usdOf(c), 'USD')]) }
   };
 }
@@ -341,7 +349,7 @@ function repEntity(f) {
     filters: dFilter('rep', 'from', t('Approved from'), from) + dFilter('rep', 'to', t('to'), to),
     kpis: kpi(t('Approved cheques'), N(L.length)) + kpi(t('Approved value (USD)'), M(L.reduce((a, c) => a + usdOf(c), 0), 'USD')),
     charts: ccard(t('By entity'), t('USD at the approval rate'), hbar(ent, { plain: usdT, title: t('By entity') })) + ccard(t('By payment currency'), t('USD at the approval rate'), hbar(curs, { plain: usdT, title: t('By payment currency') })),
-    table: tbl([t('Entity'), t('Currency'), { l: t('Cheques'), n: 1 }, { l: t('Amount'), n: 1 }, { l: t('USD'), n: 1 }, { l: t('Still open (USD)'), n: 1 }], rows.map(r => [esc(nm(r.e)), r.cur, N(r.n), M(r.amt, r.cur), M(r.usd, 'USD'), M(r.open, 'USD')]), t('No approved cheques in this period.')),
+    table: ptbl('r_ent', [t('Entity'), t('Currency'), { l: t('Cheques'), n: 1 }, { l: t('Amount'), n: 1 }, { l: t('USD'), n: 1 }, { l: t('Still open (USD)'), n: 1 }], rows.map(r => [esc(nm(r.e)), r.cur, N(r.n), M(r.amt, r.cur), M(r.usd, 'USD'), M(r.open, 'USD')]), t('No approved cheques in this period.')),
     csv: { name: 'by-entity', head: ['Entity', 'Currency', 'Cheques', 'Amount', 'USD', 'Still open USD'], rows: rows.map(r => [r.e.nameEn, r.cur, r.n, r.amt, round(r.usd, 'USD'), round(r.open, 'USD')]) }
   };
 }
@@ -352,7 +360,7 @@ function repContracts(f) {
     kpis: kpi(t('Contracts'), N(L.length)) + kpi(t('Remaining principal (USD)'), M(L.reduce((a, x) => a + usdNow(x.s.remaining, x.k.currency), 0), 'USD'), t('at the latest rate')) + kpi(t('Fully requested'), N(L.filter(x => x.s.remaining <= 0).length)),
     charts: ccard(t('Remaining principal by contract'), t('USD at the latest rate'), hbar(L.map(x => ({ label: x.k.opNo + ' · ' + nm(B(x.k.financierId)), value: usdNow(x.s.remaining, x.k.currency) })).sort((a, b) => b.value - a.value).slice(0, 10), { plain: usdT, title: t('Remaining principal by contract') })) +
       ccard(t('Paid (cleared) against principal'), t('Largest contracts'), progRows(L.slice().sort((a, b) => usdNow(b.k.principal, b.k.currency) - usdNow(a.k.principal, a.k.currency)).slice(0, 8).map(x => ({ label: x.k.opNo, value: x.s.paid, total: +x.k.principal, sub: `${money(x.s.paid, x.k.currency)} / ${money(x.k.principal, x.k.currency)}` })))),
-    table: tbl([t('Operation'), t('Financier'), { l: t('Principal'), n: 1 }, { l: t('Requested'), n: 1 }, { l: t('Cleared'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Ends')], L.map(x => [esc(x.k.opNo), esc(nm(B(x.k.financierId))), M(x.k.principal, x.k.currency), M(x.s.used, x.k.currency), M(x.s.paid, x.k.currency), M(x.s.remaining, x.k.currency), FD(x.k.endDate)]), t('No contracts registered yet.')),
+    table: ptbl('r_k', [t('Operation'), t('Financier'), { l: t('Principal'), n: 1 }, { l: t('Requested'), n: 1 }, { l: t('Cleared'), n: 1 }, { l: t('Remaining'), n: 1 }, t('Ends')], L.map(x => [esc(x.k.opNo), esc(nm(B(x.k.financierId))), M(x.k.principal, x.k.currency), M(x.s.used, x.k.currency), M(x.s.paid, x.k.currency), M(x.s.remaining, x.k.currency), FD(x.k.endDate)]), t('No contracts registered yet.')),
     csv: { name: 'contracts', head: ['Operation', 'Financier', 'Entity', 'Currency', 'Principal', 'Profit', 'Requested principal', 'Cleared principal', 'Remaining principal', 'Start', 'End'], rows: L.map(x => [x.k.opNo, B(x.k.financierId).nameEn, E(x.k.entityId).nameEn, x.k.currency, x.k.principal, x.k.profit, x.s.used, x.s.paid, x.s.remaining, fd(x.k.startDate), fd(x.k.endDate)]) }
   };
 }
@@ -363,7 +371,7 @@ function repPoa(f) {
     filters: entSel(f),
     kpis: kpi(t('Open payments on account'), N(L.length)) + kpi(t('Open value (USD)'), M(L.reduce((a, c) => a + usdOf(c), 0), 'USD')) + kpi(t('Overdue to settle'), N(L.filter(c => daysUntil(c.poaSettleDate) < 0).length)),
     charts: ccard(t('Open by beneficiary'), t('USD'), hbar(Object.entries(by).map(([l, v]) => ({ label: l, value: v })), { plain: usdT, title: t('Open by beneficiary') })),
-    table: tbl([t('Cheque'), t('Entity'), { l: t('Amount'), n: 1 }, t('Settle by'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))}</div>`, esc(nm(E(c.entityId))), payTxt(c), `${FD(c.poaSettleDate)}${daysUntil(c.poaSettleDate) < 0 ? `<div class="sm late">${t('{n} days overdue', { n: -daysUntil(c.poaSettleDate) })}</div>` : ''}`, chip(c.status)]), t('No open payments on account.'), 'cards'),
+    table: ptbl('r_poa', [t('Cheque'), t('Entity'), { l: t('Amount'), n: 1 }, t('Settle by'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))}</div>`, esc(nm(E(c.entityId))), payTxt(c), `${FD(c.poaSettleDate)}${daysUntil(c.poaSettleDate) < 0 ? `<div class="sm late">${t('{n} days overdue', { n: -daysUntil(c.poaSettleDate) })}</div>` : ''}`, chip(c.status)]), t('No open payments on account.'), 'cards'),
     csv: { name: 'payments-on-account', head: ['Cheque', 'Beneficiary', 'Entity', 'Amount', 'Currency', 'USD', 'Settle by', 'Stage'], rows: L.map(c => [c.id, B(c.benId).nameEn, E(c.entityId).nameEn, c.payAmt ?? c.amount, c.payCur, round(usdOf(c), 'USD'), fd(c.poaSettleDate), stageName(c.status)]) }
   };
 }
@@ -375,7 +383,7 @@ function repPrior(f) {
     filters: entSel(f),
     kpis: kpi(t('Payments before request'), N(L.length)) + kpi(t('Value (USD)'), M(L.reduce((a, c) => a + usdOf(c), 0), 'USD')) + kpi(t('Average delay to request'), dTxt(avg(gaps))),
     charts: ccard(t('Per month'), t('Requests flagged as paid before the request · USD · hover for the count'), vbars(months.map(m => m.label), [{ name: t('Value'), values: mv.map(l => l.reduce((a, c) => a + usdOf(c), 0)), color: CH.gold }], { plain: usdT, tipx: i => t('{n} cheques', { n: mv[i].length }), title: t('Payments before request') })),
-    table: tbl([t('Cheque'), t('Requested by'), t('Date paid'), t('Requested on'), { l: t('Days'), n: 1 }, t('How it was paid'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))} · ${payTxt(c)}</div>`, esc(UN(c.requesterId)), FD(c.priorDate), FD(c.createdAt), N(days(c.priorDate, c.createdAt)), `${esc(c.priorMethod || '')} · ${esc(c.priorRef || '')}`, chip(c.status)]), t('None.'), 'cards'),
+    table: ptbl('r_prior', [t('Cheque'), t('Requested by'), t('Date paid'), t('Requested on'), { l: t('Days'), n: 1 }, t('How it was paid'), t('Stage')], L.map(c => [`<a class="lnk" href="#/cheque/${c.id}"><bdi dir="ltr">${c.id}</bdi></a><div class="sm mut">${esc(nm(B(c.benId)))} · ${payTxt(c)}</div>`, esc(UN(c.requesterId)), FD(c.priorDate), FD(c.createdAt), N(days(c.priorDate, c.createdAt)), `${esc(c.priorMethod || '')} · ${esc(c.priorRef || '')}`, chip(c.status)]), t('None.'), 'cards'),
     csv: { name: 'paid-before-request', head: ['Cheque', 'Beneficiary', 'Requested by', 'Date paid', 'Requested on', 'Days', 'Method', 'Reference', 'Amount', 'Currency', 'Stage'], rows: L.map(c => [c.id, B(c.benId).nameEn, U(c.requesterId).fullName, fd(c.priorDate), fd(c.createdAt), days(c.priorDate, c.createdAt), c.priorMethod, c.priorRef, c.amount, c.currency, stageName(c.status)]) }
   };
 }
@@ -386,15 +394,15 @@ function banksPage() {
   const cfo = has('banks', 'create') || has('banks', 'edit');
   const bRows = D.banks.map(b => [`<b>${esc(nm(b))}</b>${b.nameAr && LANG !== 'ar' ? `<div class="sm mut" dir="rtl">${esc(b.nameAr)}</div>` : ''}`, b.currency, N(D.accounts.filter(a => a.bankId === b.id).length), activeChip(b.active), cfo ? `<button class="btn btn-o btn-sm" onclick="bankModal(${b.id})">${t('Edit')}</button>` : '']);
   const aRows = D.accounts.map(a => {
-    const iss = D.cheques.filter(c => c.issue && c.issue.accountId === a.id), out = iss.filter(c => OUTSTANDING.includes(c.status));
-    const nf = nextFree(a.id), left = D.books.filter(k => k.accountId === a.id && k.active).reduce((s, k) => s + (k.to - k.from + 1), 0) - iss.length - D.voided.filter(v => v.accountId === a.id).length;
+    const au = acctUseOf(a.id), iss = { length: +au.issued || 0 }, out = D.cheques.filter(c => c.issue && c.issue.accountId === a.id && OUTSTANDING.includes(c.status));
+    const nf = nextFree(a.id), left = D.books.filter(k => k.accountId === a.id && k.active).reduce((s, k) => s + (k.to - k.from + 1), 0) - (+au.inBooks || 0) - (+au.vd || 0);
     return [`<b>${esc(nm(BK(a.bankId)))} ••${esc(a.last4)}</b><div class="sm mut">${esc(a.description || '')}</div>`, esc(nm(E(a.entityId))), a.currency, `<bdi dir="ltr">${esc(a.ledger || '—')}</bdi>`, N(iss.length), M(out.reduce((s, c) => s + usdOf(c), 0), 'USD'),
       nf ? `<bdi dir="ltr">${nf}</bdi><div class="sm ${left < 10 ? 'late' : 'mut'}">${t('{n} left', { n: Math.max(0, left) })}</div>` : `<span class="late">${t('No chequebook')}</span>`, activeChip(a.active), cfo ? `<button class="btn btn-o btn-sm" onclick="accountModal(${a.id})">${t('Edit')}</button>` : ''];
   });
   const byB = D.accounts.map(a => ({ label: `${nm(BK(a.bankId))} ••${a.last4}`, value: D.cheques.filter(c => c.issue && c.issue.accountId === a.id && OUTSTANDING.includes(c.status)).reduce((s, c) => s + usdOf(c), 0) }));
   return phead(t('Banks & accounts'), cfo ? t('Each account belongs to one entity and one currency.') : t('Managed by the CFO.'), cfo ? `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-o" onclick="bankModal(0)">${ic('plus')}${t('Add bank')}</button><button class="btn btn-y" onclick="accountModal(0)" ${D.banks.length ? '' : 'disabled'}>${ic('plus')}${t('Add account')}</button></div>` : '') +
-    `<section class="card flat"><div style="padding:16px 16px 4px"><h2 class="h3">${t('Banks')}</h2></div>${tbl([t('Bank'), t('Currency'), { l: t('Accounts'), n: 1 }, t('Status'), ''], bRows, t('No banks yet.'))}</section>
-     <section class="card flat"><div style="padding:16px 16px 4px"><h2 class="h3">${t('Accounts')}</h2></div>${tbl([t('Account'), t('Entity'), t('Currency'), t('Ledger account'), { l: t('Cheques issued'), n: 1 }, { l: t('Outstanding (USD)'), n: 1 }, t('Next number'), t('Status'), ''], aRows, t('No accounts yet.'), 'cards')}</section>
+    `<section class="card flat"><div style="padding:16px 16px 4px"><h2 class="h3">${t('Banks')}</h2></div>${ptbl('bk', [t('Bank'), t('Currency'), { l: t('Accounts'), n: 1 }, t('Status'), ''], bRows, t('No banks yet.'))}</section>
+     <section class="card flat"><div style="padding:16px 16px 4px"><h2 class="h3">${t('Accounts')}</h2></div>${ptbl('ac', [t('Account'), t('Entity'), t('Currency'), t('Ledger account'), { l: t('Cheques issued'), n: 1 }, { l: t('Outstanding (USD)'), n: 1 }, t('Next number'), t('Status'), ''], aRows, t('No accounts yet.'), 'cards')}</section>
      ${D.accounts.length ? `<div class="charts">${ccard(t('Outstanding cheques by account'), t('Issued and not yet cleared · USD'), hbar(byB, { plain: usdT, title: t('Outstanding cheques by account') }))}</div>` : ''}`;
 }
 function bankModal(id) {
@@ -414,13 +422,13 @@ function booksPage() {
   if (!has('books')) return denied();
   const cfo = has('books', 'create') || has('books', 'edit');
   const rows = D.books.map(k => {
-    const used = D.cheques.filter(c => c.issue && c.issue.accountId === k.accountId && +c.issue.no >= k.from && +c.issue.no <= k.to).length;
-    const vd = D.voided.filter(v => v.accountId === k.accountId && v.number >= k.from && v.number <= k.to).length, size = k.to - k.from + 1, left = size - used - vd;
+    const bu = (D.bookUse || []).find(x => x.id === k.id) || {};      // counted by the server over every number
+    const used = +bu.used || 0, vd = +bu.vd || 0, size = k.to - k.from + 1, left = size - used - vd;
     return [esc(acctName(AC(k.accountId))), `<bdi dir="ltr">${k.from} – ${k.to}</bdi>`, `<div style="min-width:140px"><div class="prog"><i style="width:${(used + vd) / size * 100}%"></i></div><div class="sm mut" style="margin-top:4px">${t('{u} used · {v} voided', { u: used, v: vd })}</div></div>`,
       `<span class="${left < 10 && k.active ? 'late' : ''}">${N(left)}</span>`, activeChip(k.active), `${esc(byN(k.by || ''))}<div class="sm mut">${FD(k.at)}</div>`, cfo ? `<button class="btn btn-o btn-sm" onclick="bookModal(${k.id})">${t('Edit')}</button>` : ''];
   });
   return phead(t('Chequebooks'), t('Cheque numbers can be issued only from an active chequebook of the account.'), cfo ? `<button class="btn btn-y" onclick="bookModal(0)" ${D.accounts.length ? '' : 'disabled'}>${ic('plus')}${t('Add chequebook')}</button>` : '') +
-    `<div class="card flat">${tbl([t('Account'), t('Numbers'), t('Usage'), { l: t('Left'), n: 1 }, t('Status'), t('Added by'), ''], rows, t('No chequebooks yet.'), 'cards')}</div>`;
+    `<div class="card flat">${ptbl('bks', [t('Account'), t('Numbers'), t('Usage'), { l: t('Left'), n: 1 }, t('Status'), t('Added by'), ''], rows, t('No chequebooks yet.'), 'cards')}</div>`;
 }
 function bookModal(id) {
   const k = D.books.find(x => x.id === id) || { accountId: (D.accounts[0] || {}).id, active: true };
@@ -430,9 +438,12 @@ function bookModal(id) {
 }
 function voidedPage() {
   if (!has('voided')) return denied();
-  const rows = D.voided.map(v => [esc(acctName(AC(v.accountId))), `<bdi dir="ltr">${v.number}</bdi>`, esc(v.reason), `${esc(byN(v.by))}<div class="sm mut">${FD(v.at)}</div>`]);
+  const f = F('vd', { acc: '' }), qp = { size: f.size }; if (f.acc) qp.account = f.acc;
+  const pg = spGet('vd', '/api/voided', qp);
+  const rows = (pg ? pg.rows : []).map(v => [esc(acctName(AC(v.accountId))), `<bdi dir="ltr">${v.number}</bdi>`, esc(v.reason), `${esc(byN(v.by))}<div class="sm mut">${FD(v.at)}</div>`]);
   return phead(t('Voided numbers'), t('Spoiled or cancelled cheque leaves. A voided number can never be issued.'), has('voided', 'create') ? `<button class="btn btn-y" onclick="voidModal()" ${D.accounts.length ? '' : 'disabled'}>${ic('plus')}${t('Void a number')}</button>` : '') +
-    `<div class="card flat">${tbl([t('Account'), t('Number'), t('Reason'), t('Recorded by')], rows, t('No voided numbers.'), 'cards')}</div>`;
+    `<div class="card flat"><div class="fbar"><select class="in" aria-label="${t('Account')}" onchange="setF('vd','acc',this.value)"><option value="">${t('All accounts')}</option>${D.accounts.map(a => `<option value="${a.id}" ${String(a.id) === f.acc ? 'selected' : ''}>${esc(acctName(a))}</option>`).join('')}</select></div>
+     ${!pg ? spLoading() : pg.err ? `<div class="empty late">${esc(tErr(pg.err))}</div>` : tbl([t('Account'), t('Number'), t('Reason'), t('Recorded by')], rows, t('No voided numbers.'), 'cards') + spPager('vd', pg, null)}</div>`;
 }
 function voidModal() {
   modal(`${mhead(t('Void a cheque number'))}<div class="mb"><div class="fgrid" style="margin-top:0">${fld('v_a', t('Account'), sel('v_a', D.accounts.map(a => [a.id, acctName(a)])), 1, 'full')}${fld('v_n', t('Cheque number'), inp('v_n', '', 'inputmode="numeric" dir="ltr"'), 1)}${fld('v_r', t('Reason'), inp('v_r', '', `placeholder="${t('e.g. spoiled while writing')}"`), 1)}</div></div>
@@ -470,10 +481,10 @@ function saveBen(id) {
 function entitiesPage() {
   if (!has('entities')) return denied();
   const ed = has('entities', 'edit');
-  const rows = D.entities.map(e => [`<b>${esc(e.nameEn)}</b>`, `<span dir="rtl">${esc(e.nameAr || '')}</span>`, `<span class="chip c-appr">${e.funcCur}</span>`, N(D.cheques.filter(c => c.entityId === e.id).length), N(D.accounts.filter(a => a.entityId === e.id).length), ed ? `<button class="btn btn-o btn-sm" onclick="entModal(${e.id})">${t('Edit')}</button>` : '']);
+  const rows = D.entities.map(e => [`<b>${esc(e.nameEn)}</b>`, `<span dir="rtl">${esc(e.nameAr || '')}</span>`, `<span class="chip c-appr">${e.funcCur}</span>`, N(((D.entUse || []).find(x => x.id === e.id) || {}).n || 0), N(D.accounts.filter(a => a.entityId === e.id).length), ed ? `<button class="btn btn-o btn-sm" onclick="entModal(${e.id})">${t('Edit')}</button>` : '']);
   return phead(t('Entities'), t('Each entity keeps its books in its functional currency.'), has('entities', 'create') ? `<button class="btn btn-y" onclick="entModal(0)">${ic('plus')}${t('Add entity')}</button>` : '') +
     (D.settings.funcConfirmed ? `<div class="okbox">${ic('check')}<span>${t('Functional currencies are confirmed.')}</span></div>` : `<div class="warnbox">${ic('alert')}<span style="flex:1">${t('Confirm with the accountant that each functional currency is right before the first approval. It cannot change once cheques are approved.')}</span>${ed ? `<button class="btn btn-y btn-sm" onclick="act('confirmFunc',{},'${js(t('Confirmed'))}')">${t('Confirm')}</button>` : ''}</div>`) +
-    `<div class="card flat">${tbl([t('Name (English)'), t('Name (Arabic)'), t('Functional currency'), { l: t('Cheques'), n: 1 }, { l: t('Bank accounts'), n: 1 }, ''], rows)}</div>`;
+    `<div class="card flat">${ptbl('ent', [t('Name (English)'), t('Name (Arabic)'), t('Functional currency'), { l: t('Cheques'), n: 1 }, { l: t('Bank accounts'), n: 1 }, ''], rows)}</div>`;
 }
 function entModal(id) {
   const e = D.entities.find(x => x.id === id) || { funcCur: 'SDG' };
@@ -484,16 +495,16 @@ function deptsPage() {
   if (!has('departments')) return denied();
   const ed = has('departments', 'edit'), del = has('departments', 'delete'), addRole = has('roles', 'create');
   const rows = D.departments.map(d => {
-    const users = D.users.filter(u => u.deptId === d.id), roles = D.roles.filter(r => r.deptId === d.id), reqs = D.cheques.filter(c => c.deptId === d.id).length;
+    const users = D.users.filter(u => u.deptId === d.id), roles = D.roles.filter(r => r.deptId === d.id), reqs = +(((D.deptUse || []).find(x => x.id === d.id) || {}).n || 0);
     return [`<b>${esc(nm(d))}</b><div class="sm mut" ${LANG === 'ar' ? 'dir="ltr"' : 'dir="rtl"'}>${esc(LANG === 'ar' ? d.nameEn : (d.nameAr || ''))}</div>`, N(users.filter(u => u.active).length),
       roles.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap">${roles.map(r => has('roles') ? `<a class="chip role" href="#/role/${r.id}">${esc(nm(r))}</a>` : `<span class="chip role">${esc(nm(r))}</span>`).join('')}</div>` : `<span class="sm mut">${t('Uses the roles for all departments')}</span>`,
       N(reqs),
       `<div style="display:flex;gap:6px;flex-wrap:wrap">${ed ? `<button class="btn btn-o btn-sm" onclick="deptModal(${d.id})">${t('Edit')}</button>` : ''}${addRole ? `<a class="btn btn-o btn-sm" href="#/role/new?dept=${d.id}">${ic('plus')}${t('Add role')}</a>` : ''}${del && !users.length && !roles.length && !reqs ? `<button class="btn btn-r btn-sm" aria-label="${t('Delete')}" onclick="confirmBox('${js(t('Delete department'))}','${js(t('Delete {n}?', { n: nm(d) }))}','${js(t('Delete'))}',()=>act('delDept',{id:${d.id}},'${js(t('Deleted'))}'),true)">${ic('trash')}</button>` : ''}</div>`];
   });
-  const by = D.departments.map(d => ({ label: nm(d), value: D.cheques.filter(c => c.deptId === d.id && !['Rejected', 'Cancelled'].includes(c.status)).reduce((a, c) => a + usdOf(c), 0) }));
+  const by = D.departments.map(d => ({ label: nm(d), value: +(((D.deptUse || []).find(x => x.id === d.id) || {}).usd || 0) }));
   return phead(t('Departments'), t('Each department can have its own roles. Roles for all departments can be given to anyone.'), has('departments', 'create') ? `<button class="btn btn-y" onclick="deptModal(0)">${ic('plus')}${t('Add department')}</button>` : '') +
-    `<div class="card flat">${tbl([t('Department'), { l: t('Active users'), n: 1 }, t('Department roles'), { l: t('Requests'), n: 1 }, ''], rows, '', 'cards')}</div>
-     <div class="charts">${ccard(t('Requests by department'), t('USD equivalent, excluding rejected and cancelled'), hbar(by, { plain: usdT, title: t('Requests by department') }))}</div>`;
+    `<div class="card flat">${ptbl('dep', [t('Department'), { l: t('Active users'), n: 1 }, t('Department roles'), { l: t('Requests'), n: 1 }, ''], rows, '', 'cards')}</div>
+     <div class="charts">${ccard(t('Requests by department'), t('USD equivalent at approval, excluding rejected and cancelled'), hbar(by, { plain: usdT, title: t('Requests by department') }))}</div>`;
 }
 function deptModal(id) {
   const d = D.departments.find(x => x.id === id) || {};
@@ -536,7 +547,7 @@ function usersPage() {
     (D.settings.mailReady ? '' : `<div class="vbox">${ic('info')}<span>${t('Email is not set up yet, so reset links and sign-in codes cannot be sent.')} ${has('settings') ? `<a href="#/settings" onclick="F('set').tab='smtp'">${t('Set up email')}</a>` : ''}</span></div>`) +
     `<div class="card flat"><div class="fbar">${searchBox('usr', t('Name, username or email'))}<select class="in" onchange="setF('usr','x',this.value)"><option value="">${t('All roles')}</option>${D.roles.map(r => `<option value="${esc(r.key)}" ${r.key === f.x ? 'selected' : ''}>${esc(nm(r))}</option>`).join('')}</select>
      <select class="in" onchange="setF('usr','dep',this.value)"><option value="">${t('All departments')}</option>${D.departments.map(d => `<option value="${d.id}" ${String(d.id) === f.dep ? 'selected' : ''}>${esc(nm(d))}</option>`).join('')}</select></div>
-     ${tbl([t('User'), t('Email'), t('Role'), t('Department'), t('Language'), t('Two-step'), t('Status'), t('Last sign-in'), ''], rows, t('No users.'), 'cards')}</div>
+     ${ptbl('usr', [t('User'), t('Email'), t('Role'), t('Department'), t('Language'), t('Two-step'), t('Status'), t('Last sign-in'), ''], rows, t('No users.'), 'cards', { noSearch: true })}</div>
      <div class="charts">${ccard(t('Active users by role'), '', hbar(roleCounts, { plain: v => String(v), title: t('Active users by role') }))}</div>`;
 }
 function userModal(id) {
@@ -601,14 +612,14 @@ function rolesPage() {
         c.ops.filter(o => !CRUD.includes(o)).map(o => `<tr class="mxs"><td>${t(OP_LABEL[o])}</td>${L.map(r => ((r.perms || {})[c.page] || []).includes(o) ? `<td class="mxc"><span class="mxi ok" title="${esc(t('Allowed'))}" aria-label="${esc(t('Allowed'))}">${ic('check')}</span></td>` : `<td class="mxc"><span class="mxdash">—</span></td>`).join('')}</tr>`).join('')).join('')).join('')}
       </tbody></table></div>` : `<div class="empty">${t('No roles.')}</div>`;
   } else {
-    body = tbl([t('Role'), t('Department'), t('Cheques it sees'), t('Rights'), { l: t('Active users'), n: 1 }, t('Last change'), ''], L.map(r => {
+    body = ptbl('rol', [t('Role'), t('Department'), t('Cheques it sees'), t('Rights'), { l: t('Active users'), n: 1 }, t('Last change'), ''], L.map(r => {
       const pages = Object.keys(r.perms || {}), n = users(r);
       return [`<a class="lnk" href="#/role/${r.id}"><b>${esc(nm(r))}</b></a>${r.builtIn ? ` <span class="chip c-lock">${t('Built-in')}</span>` : ''}<div class="sm mut" ${LANG === 'ar' ? 'dir="ltr"' : 'dir="rtl"'}>${esc(LANG === 'ar' ? r.nameEn : (r.nameAr || ''))}</div>`,
         r.deptId ? esc(nm(Dp(r.deptId))) : `<span class="mut">${t('All departments')}</span>`, esc(scopeName(r.scope)),
         pages.length ? `<span class="sm">${esc(pages.slice(0, 4).map(p => t(PAGE_LABEL[p] || p)).join(' · '))}${pages.length > 4 ? ' · ' + esc(t('{n} more', { n: pages.length - 4 })) : ''}</span>` : `<span class="mut">${t('No access')}</span>`,
         n ? `<a href="#/users" onclick="F('usr').x='${js(r.key)}'">${N(n)}</a>` : N(0), r.updatedAt ? `${esc(byN(r.updatedBy))}<div class="sm mut">${FD(r.updatedAt)}</div>` : '<span class="mut">—</span>',
         `<div style="display:flex;gap:6px;flex-wrap:wrap"><a class="btn btn-o btn-sm" href="#/role/${r.id}">${has('roles', 'edit') ? t('Edit') : t('Open')}</a>${has('roles', 'create') ? `<a class="btn btn-o btn-sm" href="#/role/new?copy=${r.id}">${t('Copy')}</a>` : ''}</div>`];
-    }), t('No roles.'), 'cards');
+    }), t('No roles.'), 'cards', { noSearch: true });
   }
   return phead(t('Roles & permissions'), t('What each role can open and do, page by page, and which cheques it sees. Built-in roles keep the access the system had before.'), has('roles', 'create') ? `<a class="btn btn-y" href="#/role/new">${ic('plus')}${t('Add role')}</a>` : '') + bar + body + '</div>';
 }
@@ -731,6 +742,7 @@ async function pickLogo(inp) {
 }
 
 /* =================== TELEGRAM =================== */
+async function revealCron() { const j = await api('/api/secret/cron'); if (j && j.ok) { S.cronFull = j.url; render(); } else toast(tErr((j && j.error) || '')); }
 function telegramPage() {
   if (!has('telegram')) return denied();
   const s = D.settings, mg = has('telegram', 'edit');
@@ -740,7 +752,8 @@ function telegramPage() {
      ${mg ? `<div class="fgrid">${fld('tg_c', t('Channel'), inp('tg_c', s.telegramChannel, 'dir="ltr" placeholder="@channel or -100…"'), 1, 'full')}${fld('tg_t', t('Bot token'), `<input class="in" id="tg_t" type="password" dir="ltr" autocomplete="off" placeholder="${s.tokenSet ? t('Saved — type to replace') : '123456789:AA…'}">`, !s.tokenSet, 'full')}</div>
       <div class="hint">${t('Add the bot to the channel as an admin first. The token is stored encrypted and never shown again.')}</div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">${s.tokenSet ? `<button class="btn btn-r" onclick="confirmBox('${js(t('Disconnect Telegram'))}','${js(t('Stop posting alerts to the channel?'))}','${js(t('Disconnect'))}',()=>act('tgDisconnect',{},'${js(t('Disconnected'))}'),true)">${t('Disconnect')}</button>` : ''}<button class="btn btn-y" onclick="act('tgConnect',{channel:val('tg_c'),token:val('tg_t')},'${js(t('Connected — a test message was posted'))}')">${t('Connect and test')}</button></div>` : ''}
-     ${s.cronUrl ? `<div class="dv"></div><div class="lbl">${t('Wake-up link for the daily digest')}</div><div class="sm mut">${t('On the free plan, call this link every 15 minutes from a free scheduler such as cron-job.org.')}</div><div class="note" style="margin-top:8px;overflow-wrap:anywhere" dir="ltr">${esc(s.cronUrl)}</div>` : ''}</section></div>
+     ${s.cronUrl ? `<div class="dv"></div><div class="lbl">${t('Wake-up link for the daily digest')}</div><div class="sm mut">${t('On the free plan, call this link every 15 minutes from a free scheduler such as cron-job.org.')}</div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><div class="note" id="cron_url" style="flex:1 1 260px;overflow-wrap:anywhere" dir="ltr">${esc(S.cronFull || s.cronUrl)}</div>${S.cronFull ? `<button class="btn btn-o btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(S.cronFull).then(()=>toast(t('Copied')))">${t('Copy')}</button>` : `<button class="btn btn-o btn-sm" onclick="revealCron()">${t('Show link')}</button>`}</div>
+     <div class="sm mut" style="margin-top:6px">${s.cronEnv ? t('The key is set on the server (CRON_KEY).') : t('The link contains a secret key. Viewing it is written to the audit log.')}</div>` : ''}${s.tokenEnv ? `<div class="okbox sm" style="margin-top:10px">${ic('lock')}<span>${t('The bot token is set on the server (TELEGRAM_BOT_TOKEN), not in the app.')}</span></div>` : ''}</section></div>
     <div class="col2"><section class="card"><h2 class="h3">${t('Latest posts')}</h2>${D.tgFeed.map(m => `<div class="task"><div style="flex:1 1 300px;white-space:pre-line">${esc(String(m.text || '').replace(/<[^>]+>/g, ''))}</div><div class="sm ${m.sent ? 'mut' : 'late'}" style="text-align:end">${FD(m.at)}<div>${m.sent ? t('Sent') : esc(m.error || t('Not sent'))}</div></div></div>`).join('') || `<div class="empty">${t('Nothing posted yet.')}</div>`}</section>
      <section class="card"><h2 class="h3">${t('Daily digests')}</h2>${D.alerts.map(a => `<div class="task"><div style="flex:1">${a.count === 1 ? t('1 item to follow up') : t('{n} items to follow up', { n: a.count })} · <span class="mut">${esc(a.by && a.by !== 'System' ? byN(a.by) : t('automatic'))}</span></div><div class="sm ${a.sent ? 'mut' : 'late'}">${FD(a.at)} · ${a.sent ? t('Sent') : esc(a.error || t('Not sent'))}</div></div>`).join('') || `<div class="empty">${t('No digest yet.')}</div>`}</section></div></div>`;
 }
@@ -748,19 +761,22 @@ function telegramPage() {
 /* =================== AUDIT =================== */
 function auditPage() {
   if (!has('audit')) return denied();
-  // speed: the audit log is fetched only when this page opens (not with every state load)
-  if (!D.audit) {
-    if (!S.audLoading) { S.audLoading = true; api('/api/audit').then(j => { S.audLoading = false; if (D) { D.audit = (j && j.audit) || []; if (S.page === 'audit') render(); } }); }
-    return phead(t('Audit log'), t('Every change, who made it and when. It cannot be edited.'), '') + `<div class="card flat"><div class="empty">${t('Loading…')}</div></div>`;
-  }
-  const f = F('aud', { x: '' }), q = f.q.trim().toLowerCase();
-  let L = D.audit.filter(a => (!f.x || a.user === f.x) && (!q || (a.action + ' ' + a.entity + ' ' + a.details).toLowerCase().includes(q)) && inRange(f, (a.at || '').slice(0, 10)));
-  S.audRows = L;
-  const p = pageOf('aud', L), users = [...new Set(D.audit.map(a => a.user))].sort();
-  return phead(t('Audit log'), t('Every change, who made it and when. It cannot be edited.'), `<button class="btn btn-o" onclick="csv('audit-log',['When','User','Action','Record','Details'],S.audRows.map(a=>[fd(a.at),a.user,a.action,a.entity,a.details]))">${ic('dl')}${t('Export to Excel')}</button>`) +
-   `<div class="card flat"><div class="fbar">${searchBox('aud', t('Action, record or details'))}<select class="in" onchange="setF('aud','x',this.value)"><option value="">${t('All users')}</option>${users.map(u => `<option value="${esc(u)}" ${u === f.x ? 'selected' : ''}>${esc(byN(u))}</option>`).join('')}</select>
+  // read from the server one page at a time; search, user and dates are filtered in SQL
+  const f = F('aud', { x: '' });
+  const qp = { size: f.size }; if (f.q.trim()) qp.q = f.q.trim().slice(0, 100); if (f.x) qp.user = f.x; if (f.from) qp.from = f.from; if (f.to) qp.to = f.to;
+  const pg = spGet('aud', '/api/audit', qp);
+  if (pg && pg.users) S.audUsers = pg.users;
+  const users = S.audUsers || [];
+  return phead(t('Audit log'), t('Every change, who made it and when. It cannot be edited.'), `<button class="btn btn-o" onclick="exportAudit()">${ic('dl')}${t('Export to Excel')}</button>`) +
+   `<div class="card flat"><div class="fbar">${searchBox('aud', t('Action, record or details'))}<select class="in" aria-label="${t('User')}" onchange="setF('aud','x',this.value)"><option value="">${t('All users')}</option>${users.map(u => `<option value="${esc(u)}" ${u === f.x ? 'selected' : ''}>${esc(byN(u))}</option>`).join('')}</select>
     ${dFilter('aud', 'from', t('From'), f.from)}${dFilter('aud', 'to', t('to'), f.to)}</div>
-    ${tbl([t('When'), t('User'), t('Action'), t('Record'), t('Details')], p.rows.map(a => [`<span style="white-space:nowrap">${FD(a.at)}</span>`, esc(byN(a.user)), `<b>${esc(t(a.action))}</b>`, `<bdi dir="ltr">${esc(a.entity)}</bdi>`, `<span class="sm">${esc(a.details)}</span>`]), t('No entries.'), 'cards')}${pager('aud', p)}</div>`;
+    ${!pg ? spLoading() : pg.err ? `<div class="empty late">${esc(tErr(pg.err))}</div>` : tbl([t('When'), t('User'), t('Action'), t('Record'), t('Details')], pg.rows.map(a => [`<span style="white-space:nowrap">${FD(a.at)}</span>`, esc(byN(a.user)), `<b>${esc(t(a.action))}</b>`, `<bdi dir="ltr">${esc(a.entity)}</bdi>`, `<span class="sm">${esc(a.details)}</span>`]), t('No entries.'), 'cards') + spPager('aud', pg, null)}</div>`;
+}
+async function exportAudit() {
+  const f = F('aud'), qp = {}; if (f.q.trim()) qp.q = f.q.trim().slice(0, 100); if (f.x) qp.user = f.x; if (f.from) qp.from = f.from; if (f.to) qp.to = f.to;
+  toast(t('Preparing the export…'));
+  const rows = await spAll('/api/audit', qp, 20000); if (!rows) return;
+  csv('audit-log', ['When', 'User', 'Action', 'Record', 'Details'], rows.map(a => [fd(a.at), a.user, a.action, a.entity, a.details]));
 }
 
 /* =================== GO-LIVE CHECKLIST =================== */

@@ -148,7 +148,7 @@ async function api(path, body) {
 }
 async function loadState() {
   const j = await api('/api/state');
-  if (j && j.me) { D = j; indexD(); S.user = j.me; S.loadedAt = Date.now(); startPulse(); return true; }
+  if (j && j.me) { D = j; indexD(); S.user = j.me; S.loadedAt = Date.now(); spReset(); startPulse(); return true; }
   return false;
 }
 async function act(action, data, okMsg, opt) {
@@ -188,7 +188,7 @@ const K = op => IX().kop.get(op);
 /** Light contract record that every user receives (number, financier, currency, expiry, status). */
 const KR = op => (op && (IX().kref.get(op) || IX().kop.get(op))) || null;
 /** Messages written on a request, oldest first. */
-const MSGS = id => IX().msg.get(id) || [];
+const MSGS = id => IX().msg.get(id) || XCM.get(id) || [];
 const R = () => S.user.role;
 /** A user's name in the reader's language (English name when no Arabic one is saved). */
 function un(u) { if (!u) return '—'; return LANG === 'ar' && u.fullNameAr ? u.fullNameAr : (u.fullName || u.fullNameAr || '—'); }
@@ -234,7 +234,8 @@ function snapRate(c) {
 function usdOf(c) { if (c.appr && c.appr.usdEq != null) return +c.appr.usdEq; const r = snapRate(c); return r ? conv(c.amount, c.currency, 'USD', r) : 0; }
 function inCur(c, cur) { const r = snapRate(c); return r ? conv(c.amount, c.currency, cur, r) : 0; }
 function payTxt(c) { return c.payAmt != null ? M(c.payAmt, c.payCur) : M(c.amount, c.currency); }
-function visible() { return D.cheques; }
+// Report pages work on the period set loaded page by page from /api/cheques?list=report; other pages on the working set.
+function visible() { return REP_PAGES.includes(S.page) && S.rep && S.rep.done ? S.rep.rows : D.cheques; }
 function mine() { return D.cheques.filter(c => c.requesterId === S.user.id); }
 
 /* ---------- toast, modal, confirm ---------- */
@@ -299,7 +300,7 @@ function pager(key, p) {
     <button class="btn btn-o btn-sm" ${f.page <= 1 ? 'disabled' : ''} onclick="setF('${key}','page',${f.page - 1})">${t('Previous')}</button>
     <span class="sm">${f.page} / ${p.pages}</span>
     <button class="btn btn-o btn-sm" ${f.page >= p.pages ? 'disabled' : ''} onclick="setF('${key}','page',${f.page + 1})">${t('Next')}</button>
-    <select class="in" aria-label="${t('Rows per page')}" onchange="setF('${key}','size',+this.value)">${[25, 50, 100].map(x => `<option ${x === f.size ? 'selected' : ''}>${x}</option>`).join('')}</select>
+    <select class="in" aria-label="${t('Rows per page')}" onchange="setF('${key}','size',+this.value)">${SIZES.map(x => `<option ${x === f.size ? 'selected' : ''}>${x}</option>`).join('')}</select>
    </div></div>`;
 }
 function inRange(f, d) { if (f.from && (!d || d < f.from)) return false; if (f.to && (!d || d > f.to)) return false; return true; }
@@ -402,11 +403,131 @@ function topHtml() {
    <a class="who" href="#/profile" style="text-decoration:none;color:inherit"><div class="nm" style="text-align:end"><div class="b">${esc(un(u))}</div><div class="sm mut">${esc(roleName(u.role))}</div></div><div class="av">${esc((un(u) || '?').trim()[0] || '?')}</div></a>
   </header>`;
 }
+// global search: asks the server for the first 10 matches (it searches every cheque the user may see)
+let gsT = null, gsN = 0;
 function gsearch(q) {
   const box = document.getElementById('gres'); if (!box) return;
-  q = q.trim().toLowerCase(); if (q.length < 2) { box.innerHTML = ''; return; }
-  const hits = D.cheques.filter(c => (c.id + ' ' + B(c.benId).nameEn + ' ' + (B(c.benId).nameAr || '') + ' ' + (c.issue ? c.issue.no : '') + ' ' + (c.docNo || '')).toLowerCase().includes(q)).slice(0, 8);
-  box.innerHTML = `<div class="sres">${hits.length ? hits.map(c => `<a href="#/cheque/${c.id}"><b>${c.id}</b> · ${esc(nm(B(c.benId)))} <span class="sm mut">· ${payTxt(c)}</span> ${chip(c.status)}</a>`).join('') : `<div class="empty">${t('No match')}</div>`}</div>`;
+  q = q.trim().slice(0, 100); clearTimeout(gsT); if (q.length < 2) { box.innerHTML = ''; return; }
+  gsT = setTimeout(async () => {
+    const n = ++gsN;
+    const j = await api('/api/cheques?' + new URLSearchParams({ list: has('cheques') ? 'all' : 'mine', q, size: 10 }));
+    if (n !== gsN) return;
+    const hits = (j && j.ok && j.rows) || []; hits.forEach(keepC);
+    box.innerHTML = `<div class="sres">${hits.length ? hits.map(c => `<a href="#/cheque/${c.id}"><b>${c.id}</b> · ${esc(nm(B(c.benId)))} <span class="sm mut">· ${payTxt(c)}</span> ${chip(c.status)}</a>`).join('') : `<div class="empty">${j && j.ok === false && j.error ? esc(tErr(j.error)) : t('No match')}</div>`}</div>`;
+  }, 250);
+}
+
+/* ---------- server pages: a table never downloads the whole list ----------
+   Each list asks the server for one page (10, 25, 50 or 100 rows) with its filters; the server returns the rows
+   and an opaque cursor for the next page. Previous pages are kept, so Back does not ask again. */
+const SPC = {}; const XC = new Map(), XCM = new Map();
+const REP_PAGES = ['reports', 'entries', 'poa'];
+const SIZES = [10, 25, 50, 100];
+// after a data change: drop the cached pages but keep each list on the page it shows (that page is read again)
+function spReset() { for (const k in SPC) { SPC[k].pages = []; SPC[k].busy = false; SPC[k] = Object.assign({}, SPC[k]); } XC.clear(); XCM.clear(); if (S.cqWait) S.cqWait = {}; if (S.rep) S.rep.stale = true; }
+function keepC(c) { if (c && c.id && !(IX().chq && IX().chq.get(c.id))) XC.set(c.id, c); }
+/** One page of a server list. Returns { rows, counts, next, i } or null while loading (render() runs again when it arrives). */
+function spGet(key, url, params) {
+  const sig = url + '?' + new URLSearchParams(params).toString();
+  let st = SPC[key];
+  if (!st || st.sig !== sig) st = SPC[key] = { sig, url, params, curs: [''], pages: [], i: 0 };
+  const pg = st.pages[st.i];
+  if (pg) return Object.assign({ i: st.i }, pg);
+  if (!st.busy) {
+    st.busy = true; const i = st.i;
+    const q = new URLSearchParams(Object.assign({}, params, st.curs[i] ? { cursor: st.curs[i] } : {}));
+    api(url + '?' + q).then(j => {
+      st.busy = false;
+      if (SPC[key] !== st) return;
+      if (!j || !j.ok) { st.pages[i] = { rows: [], err: (j && j.error) || t('Could not load the list.'), next: null }; }
+      else { const rows = j.rows || j.audit || []; if (url === '/api/cheques') rows.forEach(keepC); st.pages[i] = { rows, counts: j.counts, next: j.next, users: j.users, total: j.total }; }
+      render();
+    });
+  }
+  return null;
+}
+function spMove(key, d) {
+  const st = SPC[key]; if (!st) return;
+  if (d > 0) { const pg = st.pages[st.i]; if (!pg || !pg.next) return; st.curs[st.i + 1] = pg.next; st.i++; }
+  else if (st.i > 0) st.i--;
+  render(); window.scrollTo(0, 0);
+}
+function spPager(key, pg, total) {
+  if (!pg) return '';
+  const f = F(key), a = pg.i * f.size + (pg.rows.length ? 1 : 0), b = pg.i * f.size + pg.rows.length;
+  return `<div class="pager"><span class="sm mut">${pg.rows.length ? (total != null ? t('Showing {a}–{b} of {n}', { a, b, n: N(total) }) : t('Rows {a}–{b}', { a, b })) : ''}</span>
+   <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn btn-o btn-sm" ${pg.i <= 0 ? 'disabled' : ''} onclick="spMove('${key}',-1)">${t('Previous')}</button>
+    <span class="sm">${t('Page {n}', { n: pg.i + 1 })}${total != null ? ' / ' + Math.max(1, Math.ceil(total / f.size)) : ''}</span>
+    <button class="btn btn-o btn-sm" ${pg.next ? '' : 'disabled'} onclick="spMove('${key}',1)">${t('Next')}</button>
+    <select class="in" aria-label="${t('Rows per page')}" onchange="setF('${key}','size',+this.value)">${SIZES.map(x => `<option ${x === f.size ? 'selected' : ''}>${x}</option>`).join('')}</select>
+   </div></div>`;
+}
+const spLoading = () => `<div class="empty">${t('Loading…')}</div>`;
+/** Every page of a server list for an export, 500 rows a request, at most `cap` rows. */
+async function spAll(url, params, cap, onPage) {
+  const out = []; let cur = '';
+  for (let n = 0; n < 200; n++) {
+    const j = await api(url + '?' + new URLSearchParams(Object.assign({}, params, { size: 500, export: 1 }, cur ? { cursor: cur } : {})));
+    if (!j || !j.ok) { toast(tErr((j && j.error) || t('Could not load the list.'))); return null; }
+    out.push(...(j.rows || j.audit || [])); if (onPage) onPage(j);
+    if (!j.next || out.length >= cap) break; cur = j.next;
+  }
+  return out.slice(0, cap);
+}
+/** A cheque by reference: working set first, then cheques met in lists, else asked from the server. */
+function CQ(id) {
+  const c = (IX().chq && IX().chq.get(id)) || XC.get(id);
+  if (c) return c;
+  if (!/^CHQ-[0-9A-Z-]{1,15}$/.test(id || '')) return undefined;
+  if (!S.cqWait) S.cqWait = {};
+  if (S.cqWait[id] === undefined) {
+    S.cqWait[id] = 1;
+    api('/api/cheque/' + encodeURIComponent(id)).then(j => {
+      if (j && j.ok && j.cheque) { XC.set(id, j.cheque); XCM.set(id, j.comments || []); S.cqWait[id] = 2; }
+      else S.cqWait[id] = 0;
+      render();
+    });
+  }
+  return S.cqWait[id] === 0 ? undefined : null;   // null: loading, undefined: not found
+}
+
+/* ---------- report data: open cheques plus everything touched since a date, read 500 rows a request ---------- */
+function repSince() { return S.repSince || (S.repSince = (+today().slice(0, 4) - 1) + '-01-01'); }
+function repData() {
+  const since = repSince(), r = S.rep;
+  if (r && r.since === since && r.done) { if (r.stale && !r.busy) repLoad(since, r); return r; }   // refresh quietly, keep showing the last data
+  if (r && r.since === since && r.busy) return null;
+  repLoad(since, null); return null;
+}
+function repLoad(since, old) {
+  const st = old || (S.rep = { since, rows: [], done: false });
+  st.busy = true; st.stale = false;
+  const seen = new Set((D.posted || []).map(p => p.key));
+  spAll('/api/cheques', { list: 'report', since }, 20000, j => (j.posted || []).forEach(p => { if (!seen.has(p.key)) { seen.add(p.key); D.posted.push(p); } })).then(rows => {
+    st.busy = false;
+    if (S.rep !== st) return;
+    if (rows) { st.rows = rows; st.capped = rows.length >= 20000; }
+    st.done = true;
+    if (REP_PAGES.includes(S.page)) render();
+  });
+}
+function repBar() {
+  const r = S.rep;
+  return `<div class="card flat" style="padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span class="sm mut">${t('Data: open cheques and everything since')}</span>
+   <div style="width:150px">${dateIn('rep_since', repSince(), `aria-label="${t('Data since')}" onchange="if(pd(this.value)){S.repSince=pd(this.value);render()}"`)}</div>
+   <span class="sm mut">${r && r.done ? t('{n} cheques loaded', { n: N(r.rows.length) }) + (r.capped ? ' · ' + t('limit reached, choose a later date') : '') : t('Loading…')}</span></div>`;
+}
+
+/* ---------- small tables (reference data): search box and pages on screen ---------- */
+const plain = h => String(h ?? '').replace(/<[^>]*>/g, ' ').replace(/&[a-z#0-9]+;/gi, ' ');
+function ptbl(key, head, rows, empty, cls, opt) {
+  opt = opt || {};
+  const f = F(key, { size: opt.size || 25 }), q = opt.noSearch ? '' : f.q.trim().toLowerCase();
+  const L = q ? rows.filter(r => plain(r.join(' ')).toLowerCase().includes(q)) : rows;
+  const p = pageOf(key, L);
+  const bar = !opt.noSearch && (rows.length > 10 || q) ? `<div class="fbar">${searchBox(key, opt.ph || t('Filter this list'))}</div>` : '';
+  return bar + (L.length ? tbl(head, p.rows, empty, cls) + pager(key, p) : `<div class="empty">${q ? t('No match') : (empty || t('Nothing here yet.'))}</div>`);
 }
 
 /* ---------- the waiting-for-you list (also drives the menu counters) ---------- */

@@ -15,7 +15,8 @@ var builder = WebApplication.CreateBuilder(args);
 var cs = builder.Configuration.GetConnectionString("ChequeDb");
 if (string.IsNullOrWhiteSpace(cs)) throw new InvalidOperationException("Connection string 'ChequeDb' is missing. Add it in Azure App Service > Environment variables > Connection strings.");
 
-builder.Services.AddDbContextPool<AppDb>(o => o.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(8, TimeSpan.FromSeconds(10), null)));
+builder.Services.AddDbContextPool<AppDb>(o => o.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(8, TimeSpan.FromSeconds(10), null)).AddInterceptors(new RlsInterceptor()));
+Sec.AddSecurity(builder);   // Kestrel limits, forwarded headers, HSTS, rate limits (Security.cs)
 // Speed: compress API answers and scripts (the state JSON shrinks to about a tenth)
 builder.Services.AddResponseCompression(o =>
 {
@@ -35,10 +36,12 @@ builder.Services.AddSingleton<Mailer>();
 builder.Services.AddHostedService<DailyWorker>();
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme).AddCookie(o =>
 {
-    o.Cookie.Name = "chq.auth";
-    o.Cookie.HttpOnly = true;
+    var dev = builder.Environment.IsDevelopment();
+    o.Cookie.Name = dev ? "chq.auth" : "__Host-chq.auth";   // __Host-: HTTPS only, this site only, no sub-domains
+    o.Cookie.HttpOnly = true;                                 // scripts cannot read the session cookie
     o.Cookie.SameSite = SameSiteMode.Strict;
-    o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+    o.Cookie.SecurePolicy = dev ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
+    o.Cookie.Path = "/";
     o.ExpireTimeSpan = TimeSpan.FromHours(10);
     o.SlidingExpiration = true;
     o.Events.OnRedirectToLogin = ctx => { ctx.Response.StatusCode = 401; return Task.CompletedTask; };
@@ -47,6 +50,7 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddAuthorization();
 
 var app = builder.Build();
+Sec.UseSecurity(app);        // bot guard, flood bans, security headers, CSRF and JSON validation (Security.cs)
 app.UseResponseCompression();
 
 using (var scope = app.Services.CreateScope())
@@ -56,7 +60,9 @@ using (var scope = app.Services.CreateScope())
     var startLog = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
     var strategy = db.Database.CreateExecutionStrategy();
     await strategy.ExecuteAsync(async () => { await db.Database.EnsureCreatedAsync(); });
+    await Rls.Drop(db);                // no policy while the schema is upgraded (it binds Cheques.RequesterId / DeptId)
     await strategy.ExecuteAsync(async () => { await Schema.Upgrade(db, store, startLog); });
+    await Rls.Install(db, startLog);   // row-level security policy in SQL Server (Rls.cs)
 
     // One-time CFO reset: set the app setting CFO_RESET to a new value in Azure.
     // Clears only the CFO's sign-in and reopens the setup screen; all other data is kept.
@@ -76,17 +82,7 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-app.Use(async (ctx, next) =>
-{
-    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
-    ctx.Response.Headers["X-Frame-Options"] = "DENY";
-    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
-    if (ctx.Request.Path.StartsWithSegments("/api")) ctx.Response.Headers["Cache-Control"] = "no-store";
-    // simple CSRF guard: API writes must come from our own page
-    if (HttpMethods.IsPost(ctx.Request.Method) && ctx.Request.Path.StartsWithSegments("/api") && ctx.Request.Headers["X-Requested-With"] != "ChequeTrack")
-    { ctx.Response.StatusCode = 400; await ctx.Response.WriteAsync("Bad request"); return; }
-    await next();
-});
+// Security headers, CSRF header check and request validation now run in Sec.UseSecurity (Security.cs).
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {
@@ -100,6 +96,7 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();         // per user / per IP limits (Security.cs); after authentication so signed-in users get their own bucket
 // notifications: a saved change moves the pulse so other open screens refresh their data
 app.Use(async (ctx, next) =>
 {
@@ -195,7 +192,8 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
     var company = Str(b, "company"); var full = Str(b, "fullName"); var fullAr = Trunc(Str(b, "fullNameAr"), 150); var un = Str(b, "username").ToLowerInvariant(); var pw = Str(b, "password", false);
     var email = Str(b, "email").ToLowerInvariant(); var lang = Str(b, "lang") == "ar" ? "ar" : "en";
     if ((!reset && company.Length < 2) || full.Length < 2) return Err("Company and full name are required.");
-    if (!Regex.IsMatch(un, "^[a-z0-9._-]{3,}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore.");
+    if (company.Length > 150 || full.Length > 150 || pw.Length > 128 || email.Length > 150) return Err("One of the fields is too long.");
+    if (!Regex.IsMatch(un, "^[a-z0-9._-]{3,40}$")) return Err("Username: at least 3 characters — letters, numbers, dot, dash or underscore.");
     if (!ValidEmail(email)) return Err("Enter a valid email. It is used to reset the password.");
     var pe = Pwd.Check(pw, s.Policy); if (pe != null) return Err(pe);
     if (reset)
@@ -222,7 +220,7 @@ app.MapPost("/api/setup", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
     }
     s.Company = company;
     s.CronKey = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-    var tz = Str(b, "timeZone"); if (!string.IsNullOrEmpty(tz)) s.TimeZone = tz;
+    var tz = Str(b, "timeZone"); if (!string.IsNullOrEmpty(tz) && tz.Length <= 64 && TimeZoneInfo.TryFindSystemTimeZoneById(tz, out _)) s.TimeZone = tz;
     await ss.Save(db, s);
     var mg = new Department { NameEn = "Management", NameAr = "الإدارة" };
     var fin = new Department { NameEn = "Finance", NameAr = "المالية" };
@@ -240,6 +238,7 @@ app.MapPost("/api/login", async (HttpContext ctx, AppDb db, SettingsStore ss, Ma
 {
     var s = await ss.Get(db); var P = s.Policy;
     var un = Str(b, "username").ToLowerInvariant(); var pw = Str(b, "password", false);
+    if (un.Length is 0 or > 60 || pw.Length is 0 or > 128) { await Task.Delay(400); return Err("Invalid username or password."); }
     var u = await db.Users.FirstOrDefaultAsync(x => x.Username == un);
     if (u == null) { await Task.Delay(400); return Err("Invalid username or password."); }
     if (!u.Active) return Err("This account is disabled. Contact the System Admin.");
@@ -286,7 +285,8 @@ app.MapPost("/api/login2", async (HttpContext ctx, AppDb db, SettingsStore ss, I
 {
     var s = await ss.Get(db);
     string raw;
-    try { raw = dp.CreateProtector("ChequeTrack.2fa.v1").Unprotect(Str(b, "ticket")); } catch { return Err("This sign-in has expired. Sign in again."); }
+    var tkt = Str(b, "ticket"); if (tkt.Length is 0 or > 1000) return Err("This sign-in has expired. Sign in again.");
+    try { raw = dp.CreateProtector("ChequeTrack.2fa.v1").Unprotect(tkt); } catch { return Err("This sign-in has expired. Sign in again."); }
     var parts = raw.Split('|');
     if (parts.Length != 2 || !int.TryParse(parts[0], out var uid) || !long.TryParse(parts[1], out var ticks) || new DateTime(ticks, DateTimeKind.Utc) < DateTime.UtcNow)
         return Err("This sign-in has expired. Sign in again.");
@@ -294,6 +294,7 @@ app.MapPost("/api/login2", async (HttpContext ctx, AppDb db, SettingsStore ss, I
     if (u == null || !u.Active || !u.TwoFaExpUtc.HasValue || u.TwoFaExpUtc < DateTime.UtcNow) return Err("The code has expired. Sign in again.");
     if (u.TwoFaTries >= 5) return Err("Too many wrong codes. Sign in again.");
     var code = Regex.Replace(Str(b, "code"), "[^0-9]", "");
+    if (code.Length is < 4 or > 10) return Err("That code is not correct.");
     if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(Sha(u.Id + ":" + code)), Encoding.UTF8.GetBytes(u.TwoFaHash ?? "")))
     {
         u.TwoFaTries++; await db.SaveChangesAsync();
@@ -310,6 +311,7 @@ app.MapPost("/api/forgot", async (HttpContext ctx, AppDb db, SettingsStore ss, M
 {
     var s = await ss.Get(db);
     var email = Str(b, "email").ToLowerInvariant();
+    if (email.Length > 150) email = "";
     if (!Mailer.Ready(s)) return Err("Password reset by email is not set up yet. Ask the System Admin.");
     // Same answer whatever the email, so nobody can find out which emails have accounts.
     if (ValidEmail(email))
@@ -330,7 +332,8 @@ app.MapPost("/api/reset", async (HttpContext ctx, AppDb db, SettingsStore ss, Js
 {
     var s = await ss.Get(db);
     var token = Str(b, "token"); var pw = Str(b, "password", false);
-    if (token.Length < 20) return Err("This reset link is not valid.");
+    if (token.Length < 20 || token.Length > 100 || !Regex.IsMatch(token, "^[A-Za-z0-9_-]+$")) return Err("This reset link is not valid.");
+    if (pw.Length > 128) return Err("The password is too long.");
     var h = Sha(token);
     var r = await db.PwdResets.FirstOrDefaultAsync(x => x.TokenHash == h);
     if (r == null || r.UsedUtc.HasValue || r.ExpUtc < DateTime.UtcNow) return Err("This reset link has expired or was already used. Ask for a new one.");
@@ -365,6 +368,7 @@ app.MapPost("/api/password", async (HttpContext ctx, AppDb db, SettingsStore ss,
     var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
     var s = await ss.Get(db);
     var old = Str(b, "old", false); var nw = Str(b, "new", false);
+    if (old.Length > 128 || nw.Length > 128) return Err("The password is too long.");
     if (!Pwd.Verify(old, u.PwdHash)) return Err("Current password is not correct.");
     var pe = Pwd.Check(nw, s.Policy); if (pe != null) return Err(pe);
     if (Pwd.Verify(nw, u.PwdHash)) return Err("New password must be different from the current one.");
@@ -386,26 +390,79 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
     var anyAdmin = await AnyAdmin(db, roles);
     var A = Access.Of(u, roles, anyAdmin);
 
-    // cheques the role may see: all, the user's department (and own), or only own requests
-    var cq = db.Cheques.AsNoTracking();
+    // ---- totals that need every cheque are computed here, so the browser never downloads the whole table ----
+    var seeK = A.Has("contracts") || A.Has("reports");
+    List<object> kUse = new();
+    if (seeK)
+    {
+        var kq = from l in db.ChequeLines.AsNoTracking()
+                 join c in db.Cheques.AsNoTracking() on l.ChequeId equals c.Id
+                 where l.OpNo != null && l.OpNo != "" && c.Status != "Rejected" && c.Status != "Cancelled"
+                 select new { l.OpNo, l.ChequeId, l.Principal, c.Status };
+        var sums = await kq.GroupBy(x => x.OpNo)
+            .Select(g => new { opNo = g.Key, used = g.Sum(x => x.Principal), paid = g.Sum(x => x.Status == "Cleared" ? x.Principal : 0m) }).ToListAsync();
+        var cnt = (await kq.Select(x => new { x.OpNo, x.ChequeId }).Distinct().ToListAsync())
+            .GroupBy(x => x.OpNo).ToDictionary(g => g.Key, g => g.Count());
+        kUse = sums.Select(x => (object)new { x.opNo, x.used, x.paid, n = cnt.GetValueOrDefault(x.opNo) }).ToList();
+    }
+    var seeAcct = A.Has("banks") || A.Has("books") || A.Has("voided") || A.Has("issue", "issue") || A.Has("checklist");
+    object acctUse = Array.Empty<object>(), bookUse = Array.Empty<object>();
+    if (seeAcct)
+    {
+        var issued = await db.Cheques.AsNoTracking().Where(c => c.AccountId != null && c.ChequeNo != null && c.ChequeNo != "")
+            .Select(c => new { a = c.AccountId.Value, no = c.ChequeNo }).ToListAsync();          // numbers only, kept on the server
+        var vds = await db.VoidedNos.AsNoTracking().Select(v => new { a = v.AccountId, no = v.Number }).ToListAsync();
+        var bks = await db.Chequebooks.AsNoTracking().ToListAsync();
+        var usedBy = issued.GroupBy(x => x.a).ToDictionary(g => g.Key, g => new HashSet<long>(g.Select(x => long.TryParse(x.no, out var n) ? n : -1)));
+        var vdBy = vds.GroupBy(x => x.a).ToDictionary(g => g.Key, g => new HashSet<long>(g.Select(x => (long)x.no)));
+        long? Next(int acc)
+        {
+            var u2 = usedBy.GetValueOrDefault(acc) ?? new HashSet<long>(); var v2 = vdBy.GetValueOrDefault(acc) ?? new HashSet<long>();
+            foreach (var bk in bks.Where(k => k.AccountId == acc && k.Active).OrderBy(k => k.FromNo))
+                for (long n = bk.FromNo; n <= bk.ToNo && n < bk.FromNo + 100000; n++) if (!u2.Contains(n) && !v2.Contains(n)) return n;
+            return null;
+        }
+        bool InActive(int acc, long n) => bks.Any(k => k.AccountId == acc && k.Active && n >= k.FromNo && n <= k.ToNo);
+        acctUse = issued.Select(x => x.a).Distinct().Concat(bks.Select(k => k.AccountId)).Distinct()
+            .Select(a => new
+            {
+                id = a, issued = issued.Count(x => x.a == a), next = Next(a),
+                inBooks = (usedBy.GetValueOrDefault(a) ?? new HashSet<long>()).Count(n => InActive(a, n)),
+                vd = (vdBy.GetValueOrDefault(a) ?? new HashSet<long>()).Count(n => InActive(a, n))
+            }).ToList();
+        bookUse = bks.Select(k => new
+        {
+            id = k.Id,
+            used = (usedBy.GetValueOrDefault(k.AccountId) ?? new HashSet<long>()).Count(n => n >= k.FromNo && n <= k.ToNo),
+            vd = (vdBy.GetValueOrDefault(k.AccountId) ?? new HashSet<long>()).Count(n => n >= k.FromNo && n <= k.ToNo)
+        }).ToList();
+    }
+    var entUse = A.Has("entities") ? (await db.Cheques.AsNoTracking().GroupBy(c => c.EntityId).Select(g => new { id = g.Key, n = g.Count() }).ToListAsync()).Cast<object>().ToList() : new List<object>();
+    var deptUse = A.Has("departments") ? (await db.Cheques.AsNoTracking().GroupBy(c => c.DeptId)
+        .Select(g => new { id = g.Key, n = g.Count(), usd = g.Sum(c => c.Status != "Rejected" && c.Status != "Cancelled" ? (c.UsdEq ?? 0m) : 0m) }).ToListAsync()).Cast<object>().ToList() : new List<object>();
+
+    // ---- the working set: open cheques plus those closed in the last 190 days (6-month charts, notifications) ----
+    // Older closed cheques are read page by page from /api/cheques. Row-level security filters these queries in SQL.
+    const int WorkCap = 3000;
+    var cutoff = DateTime.ParseExact(Clock.Today(s), "yyyy-MM-dd", CultureInfo.InvariantCulture).AddDays(-190).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
     var myId = u.Id; var myDept = u.DeptId;
-    if (A.Scope == "dept") cq = cq.Where(c => c.DeptId == myDept || c.RequesterId == myId);
-    else if (A.Scope != "all") cq = cq.Where(c => c.RequesterId == myId);
-    var chq = await cq.OrderByDescending(c => c.Seq).ToListAsync();
-    var ids = chq.Select(c => c.Id).ToList();
-    var lines = (await db.ChequeLines.AsNoTracking().Where(l => ids.Contains(l.ChequeId)).ToListAsync()).GroupBy(l => l.ChequeId).ToDictionary(g => g.Key, g => g.OrderBy(l => l.Id).ToList());
-    var files = (await db.Attachments.AsNoTracking().Where(a => ids.Contains(a.ChequeId))
-        .Select(a => new { a.Id, a.ChequeId, a.Kind, a.FileName, a.Size, a.By, a.At }).ToListAsync()).GroupBy(a => a.ChequeId).ToDictionary(g => g.Key, g => g.ToList());
-    var msgs = (await db.Comments.AsNoTracking().Where(m => ids.Contains(m.ChequeId)).OrderBy(m => m.Id).ToListAsync())
-        .Select(m => new { id = m.Id, chequeId = m.ChequeId, at = m.At, byId = m.ById, by = m.ByName, to = m.ToKind, toUserId = m.ToUserId, stage = m.Stage, kind = m.Kind, text = m.Text,
-            read = (m.ReadBy ?? "").Contains("|" + myId + "|") }).ToList();
+    List<Cheque> chq; Dictionary<string, List<ChequeLine>> lines; Dictionary<string, List<FileRow>> files; List<Comment> msgRows;
+    using (Rls.As(u, A.Scope))
+    {
+        var cq = ScopeQ(db.Cheques.AsNoTracking(), A, myId, myDept)
+            .Where(c => !Paging.Closed.Contains(c.Status) || c.CreatedAt.CompareTo(cutoff) >= 0 || c.ClosedAt.CompareTo(cutoff) >= 0 || c.SolvedAt.CompareTo(cutoff) >= 0 || c.RejectedAt.CompareTo(cutoff) >= 0);
+        chq = await cq.OrderByDescending(c => c.Seq).Take(WorkCap + 1).ToListAsync();
+        var ids = chq.Select(c => c.Id).ToList();
+        (lines, files) = await LinesFiles(db, ids);
+        msgRows = await db.Comments.AsNoTracking().Where(m => ids.Contains(m.ChequeId)).OrderBy(m => m.Id).ToListAsync();
+    }
+    var trimmed = chq.Count > WorkCap; if (trimmed) chq = chq.Take(WorkCap).ToList();
+    var msgs = msgRows.Select(m => MsgView(m, myId)).ToList();
     var contractRefs = (await db.Contracts.AsNoTracking().OrderBy(c => c.OpNo)
         .Select(x => new { x.Id, x.OpNo, x.FinancierId, x.EntityId, x.Currency, x.EndDate, x.ExpiryDate, x.Status }).ToListAsync())
         .Select(x => new { id = x.Id, opNo = x.OpNo, financierId = x.FinancierId, entityId = x.EntityId, currency = x.Currency,
             expiryDate = string.IsNullOrEmpty(x.ExpiryDate) ? x.EndDate : x.ExpiryDate, status = string.IsNullOrEmpty(x.Status) ? "Active" : x.Status }).ToList();
-    var cheques = chq.Select(c => ChequeView(c,
-        lines.TryGetValue(c.Id, out var ls) ? ls.Select(l => (object)new { opNo = l.OpNo, instNo = l.InstNo, month = l.Month, due = l.Due, paidBefore = l.PaidBefore, requested = l.Requested, principal = l.Principal }).ToList() : new List<object>(),
-        files.TryGetValue(c.Id, out var fs) ? fs.Select(f => (object)new { id = f.Id, kind = f.Kind, name = f.FileName, size = f.Size, by = f.By, at = f.At }).ToList() : new List<object>())).ToList();
+    var cheques = chq.Select(c => ChequeOut(c, lines, files)).ToList();
 
     var users = await db.Users.AsNoTracking().OrderBy(x => x.FullName).ToListAsync();
     var uv = users.Select(x => A.Has("users")
@@ -414,21 +471,25 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
             pwdChangedAt = x.PwdChangedAt, lastLogin = x.LastLogin }
         : new { id = x.Id, fullName = x.FullName, fullNameAr = x.FullNameAr ?? "", role = x.Role, deptId = x.DeptId, active = x.Active }).ToList();
 
-    var all = await db.Cheques.AsNoTracking().Select(c => new { c.FxId, c.IssueRateId, c.ClearRateId }).ToListAsync();
-    var used = new HashSet<string>(all.SelectMany(c => new[] { c.FxId, c.IssueRateId, c.ClearRateId }).Where(x => !string.IsNullOrEmpty(x)));
-    var rates = (await db.Rates.AsNoTracking().OrderByDescending(r => r.Date).ToListAsync())
-        .Select(r => new { id = r.Id, date = r.Date, QAR = r.QAR, SDG = r.SDG, setBy = r.SetBy, setAt = r.SetAt, source = r.Source ?? "", locked = used.Contains(r.Id) }).ToList();
+    // rates: the last 400 days are enough for lookups and the chart; the Exchange rates table pages through /api/rates
+    var rFrom = DateTime.ParseExact(Clock.Today(s), "yyyy-MM-dd", CultureInfo.InvariantCulture).AddDays(-400).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    var rateRows = await db.Rates.AsNoTracking().Where(r => r.Date.CompareTo(rFrom) >= 0).OrderByDescending(r => r.Date).Take(500).ToListAsync();
+    if (rateRows.Count == 0) rateRows = await db.Rates.AsNoTracking().OrderByDescending(r => r.Date).Take(1).ToListAsync();
+    var used = await RatesUsed(db, rateRows.Select(r => r.Id).ToList());
+    var rates = rateRows.Select(r => new { id = r.Id, date = r.Date, QAR = r.QAR, SDG = r.SDG, setBy = r.SetBy, setAt = r.SetAt, source = r.Source ?? "", locked = used.Contains(r.Id) }).ToList();
 
     var tokenSet = !string.IsNullOrEmpty(ss.Token(s));
     var settings = new
     {
         alertDays = s.AlertDays, alertTime = s.AlertTime, telegramChannel = A.Has("telegram") ? s.TelegramChannel : "", tokenSet, tgEvents = s.TgEvents, hideTelegram = s.HideTelegram,
         reportCurrency = s.ReportCurrency, company = s.Company, timeZone = s.TimeZone, logo = s.Logo,
-        cronUrl = (A.Has("telegram", Perm.E) || A.Has("settings")) ? $"{BaseUrl(ctx)}/api/cron/{s.CronKey}" : null,
+        // the alert link carries a secret key: only a masked form is sent; the full link comes from /api/secret/cron (logged)
+        cronUrl = (A.Has("telegram", Perm.E) || A.Has("settings")) ? $"{BaseUrl(ctx)}/api/cron/••••••••{Last4(ss.CronKey(s))}" : null,
+        cronEnv = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CRON_KEY")), tokenEnv = SettingsStore.TokenFromEnv, smtpEnv = SettingsStore.SmtpPassFromEnv,
         policy = PolicyView(s.Policy), secondLimitUsd = s.SecondLimitUsd, rateAlertPct = s.RateAlertPct,
         acc = new { payables = s.Acc.Payables, deferred = s.Acc.Deferred, finPrincipal = s.Acc.FinPrincipal, finProfit = s.Acc.FinProfit, poa = s.Acc.Poa, fxDiff = s.Acc.FxDiff }, funcConfirmed = s.FuncConfirmed,
         mailReady = Mailer.Ready(s),
-        smtp = A.Has("settings") ? new { host = s.Smtp.Host, port = s.Smtp.Port, user = s.Smtp.User, from = s.Smtp.From, fromName = s.Smtp.FromName, ssl = s.Smtp.Ssl, passSet = !string.IsNullOrEmpty(s.Smtp.PassEnc) } : null
+        smtp = A.Has("settings") ? new { host = s.Smtp.Host, port = s.Smtp.Port, user = s.Smtp.User, from = s.Smtp.From, fromName = s.Smtp.FromName, ssl = s.Smtp.Ssl, passSet = !string.IsNullOrEmpty(s.Smtp.PassEnc) || SettingsStore.SmtpPassFromEnv } : null
     };
 
     var accounts = await db.BankAccounts.AsNoTracking().ToListAsync();
@@ -466,14 +527,196 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
         beneficiaries = await db.Beneficiaries.AsNoTracking().OrderBy(x => x.NameEn)
             .Select(x => new { id = x.Id, code = x.Code ?? "", type = x.Type, nameEn = x.NameEn, nameAr = x.NameAr, contact = x.Contact, phone = x.Phone, email = x.Email }).ToListAsync(),
         benUse, rates, settings, cheques, tgFeed, alerts, acctCurs, comments = msgs, contractRefs,
+        trimmed, workSince = cutoff, kUse, acctUse, bookUse, deptUse, entUse,
         banks = seeBanks ? banks.Select(x => (object)new { id = x.Id, nameEn = x.NameEn, nameAr = x.NameAr, currency = x.Currency, active = x.Active }).ToList() : new List<object>(),
         accounts = seeBanks ? accounts.Select(x => (object)new { id = x.Id, bankId = x.BankId, entityId = x.EntityId, description = x.Description, last4 = x.Last4, ledger = x.Ledger, active = x.Active, currency = bankCur.GetValueOrDefault(x.BankId) }).ToList() : new List<object>(),
         books = seeBooks ? (await db.Chequebooks.AsNoTracking().ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, from = x.FromNo, to = x.ToNo, active = x.Active, by = x.AddedBy, at = x.AddedAt }).ToList() : new List<object>(),
-        voided = seeBooks ? (await db.VoidedNos.AsNoTracking().OrderByDescending(v => v.Id).ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, number = x.Number, reason = x.Reason, by = x.By, at = x.At }).ToList() : new List<object>(),
+        voided = seeBooks ? (await db.VoidedNos.AsNoTracking().OrderByDescending(v => v.Id).Take(500).ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, number = x.Number, reason = x.Reason, by = x.By, at = x.At }).ToList() : new List<object>(),
         contracts = seeContracts ? (await db.Contracts.AsNoTracking().OrderBy(c => c.OpNo).ToListAsync()).Select(x => (object)new { id = x.Id, opNo = x.OpNo, financierId = x.FinancierId, entityId = x.EntityId, currency = x.Currency, principal = x.Principal, profit = x.Profit, termMonths = x.TermMonths, instalments = x.Instalments, startDate = x.StartDate, endDate = x.EndDate, notes = x.Notes, log = x.Log ?? "[]", by = x.CreatedBy, at = x.CreatedAt,
             expiryDate = string.IsNullOrEmpty(x.ExpiryDate) ? x.EndDate : x.ExpiryDate, noticeDays = x.NoticeDays > 0 ? x.NoticeDays : 30, ownerId = x.OwnerId, followUpDate = x.FollowUpDate, status = string.IsNullOrEmpty(x.Status) ? "Active" : x.Status, closedAt = x.ClosedAt, closedBy = x.ClosedBy, closeReason = x.CloseReason }).ToList() : new List<object>(),
-        posted = A.Has("entries") ? (await db.PostedEntries.AsNoTracking().ToListAsync()).Select(x => (object)new { key = x.Key, by = x.By, at = x.At }).ToList() : new List<object>()
+        posted = A.Has("entries") ? await PostedFor(db, chq.Select(c => c.Id).ToList()) : new List<object>()   // only the cheques sent
     });
+});
+
+
+// ---------- shared by the state and the paged lists ----------
+static IQueryable<Cheque> ScopeQ(IQueryable<Cheque> q, Access A, int me, int dept) =>
+    A.Scope == "all" ? q : A.Scope == "dept" ? q.Where(c => c.DeptId == dept || c.RequesterId == me) : q.Where(c => c.RequesterId == me);
+
+static async Task<(Dictionary<string, List<ChequeLine>>, Dictionary<string, List<FileRow>>)> LinesFiles(AppDb db, List<string> ids, bool withFiles = true)
+{
+    var lines = ids.Count == 0 ? new Dictionary<string, List<ChequeLine>>() :
+        (await db.ChequeLines.AsNoTracking().Where(l => ids.Contains(l.ChequeId)).ToListAsync()).GroupBy(l => l.ChequeId).ToDictionary(g => g.Key, g => g.OrderBy(l => l.Id).ToList());
+    var files = ids.Count == 0 || !withFiles ? new Dictionary<string, List<FileRow>>() :
+        (await db.Attachments.AsNoTracking().Where(a => ids.Contains(a.ChequeId)).Select(a => new FileRow(a.Id, a.ChequeId, a.Kind, a.FileName, a.Size, a.By, a.At)).ToListAsync())
+        .GroupBy(a => a.ChequeId).ToDictionary(g => g.Key, g => g.ToList());
+    return (lines, files);
+}
+
+static object ChequeOut(Cheque c, Dictionary<string, List<ChequeLine>> lines, Dictionary<string, List<FileRow>> files) => ChequeView(c,
+    lines.TryGetValue(c.Id, out var ls) ? ls.Select(l => (object)new { opNo = l.OpNo, instNo = l.InstNo, month = l.Month, due = l.Due, paidBefore = l.PaidBefore, requested = l.Requested, principal = l.Principal }).ToList() : new List<object>(),
+    files.TryGetValue(c.Id, out var fs) ? fs.Select(f => (object)new { id = f.Id, kind = f.Kind, name = f.FileName, size = f.Size, by = f.By, at = f.At }).ToList() : new List<object>());
+
+static object MsgView(Comment m, int me) => new { id = m.Id, chequeId = m.ChequeId, at = m.At, byId = m.ById, by = m.ByName, to = m.ToKind, toUserId = m.ToUserId, stage = m.Stage, kind = m.Kind, text = m.Text,
+    read = (m.ReadBy ?? "").Contains("|" + me + "|") };
+
+static async Task<HashSet<string>> RatesUsed(AppDb db, List<string> ids)
+{
+    if (ids.Count == 0) return new HashSet<string>();
+    var u = await db.Cheques.AsNoTracking().Where(c => ids.Contains(c.FxId) || ids.Contains(c.IssueRateId) || ids.Contains(c.ClearRateId))
+        .Select(c => new { c.FxId, c.IssueRateId, c.ClearRateId }).ToListAsync();
+    return new HashSet<string>(u.SelectMany(c => new[] { c.FxId, c.IssueRateId, c.ClearRateId }).Where(x => !string.IsNullOrEmpty(x)));
+}
+/// <summary>Posted journal-entry marks for these cheques only (every key ends with the cheque reference).</summary>
+static async Task<List<object>> PostedFor(AppDb db, List<string> ids)
+{
+    if (ids.Count == 0) return new List<object>();
+    var res = new List<object>();
+    foreach (var part in ids.Chunk(500))
+    {
+        var p = part.ToList();
+        res.AddRange((await db.PostedEntries.AsNoTracking().Where(x => x.Key.Contains("CHQ-") && p.Contains(x.Key.Substring(x.Key.IndexOf("CHQ-"), 20))).ToListAsync())
+            .Select(x => (object)new { key = x.Key, by = x.By, at = x.At }));
+    }
+    return res;
+}
+static string Last4(string k) => string.IsNullOrEmpty(k) ? "" : k.Length <= 4 ? k : k[^4..];
+
+// ---------- paged lists: one page per call, cursor for the next one ----------
+// GET /api/cheques?list=all|mine|appr|iss|fu|report&tab=&q=&ent=&cur=&from=&to=&op=&size=25&cursor=
+app.MapGet("/api/cheques", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var s = await ss.Get(db);
+    if (Forced(u, s) != null) return Err("Password change required.", 403);
+    var A = await AccessOf(db, u);
+    var Q = ctx.Request.Query;
+    string P(string k) => (Q[k].ToString() ?? "").Trim();
+    var list = P("list"); var tab = P("tab"); var text = P("q"); var cur = P("cur").ToUpperInvariant(); var from = P("from"); var to = P("to"); var op = P("op"); var since = P("since");
+    var report = list == "report";
+    var size = Sec.PageSize(P("size"), big: report || P("export") == "1");
+    if (text.Length > 100 || op.Length > 50 || tab.Length > 10 || !Sec.Date(from) || !Sec.Date(to) || !Sec.Date(since) || (cur.Length > 0 && !Regex.IsMatch(cur, "^[A-Z]{3}$")))
+        return Err("The filters are not valid.");
+    var ent = int.TryParse(P("ent"), out var e0) && e0 > 0 ? e0 : 0;
+
+    // page rights: each list needs the right to open its page
+    var okList = list switch
+    {
+        "all" => A.Has("cheques"), "mine" => true, "appr" => A.Has("approvals"), "iss" => A.Has("issue"), "fu" => A.Has("followup"),
+        "report" => A.Has("reports") || A.Has("entries") || A.Has("poa") || A.Has("cheques"), _ => false
+    };
+    if (!okList) return Err("Your role cannot open this list.", 403);
+
+    var today = Clock.Today(s);
+    var soon = DateTime.ParseExact(today, "yyyy-MM-dd", CultureInfo.InvariantCulture).AddDays(Math.Max(0, s.AlertDays)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    bool a1 = A.Has("approvals", "approve"), a2 = A.Has("approvals", "approve2");
+    var me = u.Id;
+
+    using var _rls = Rls.As(u, A.Scope);      // SQL Server returns only the rows this user may see
+    var baseQ = ScopeQ(db.Cheques.AsNoTracking(), A, me, u.DeptId);
+    object counts = null; bool byDue = false;
+    if (report)
+    {
+        // reports, journal entries and payments on account: open cheques plus everything touched since the chosen date
+        if (since.Length == 0) since = today[..4] + "-01-01";
+        baseQ = baseQ.Where(c => !Paging.Closed.Contains(c.Status) || c.CreatedAt.CompareTo(since) >= 0 || c.ClosedAt.CompareTo(since) >= 0 || c.SolvedAt.CompareTo(since) >= 0 || c.RejectedAt.CompareTo(since) >= 0 || c.ApprovedAt.CompareTo(since) >= 0);
+    }
+    else
+    {
+        var L = Paging.List(list, me, today, soon, a1, a2);
+        if (L == null) return Err("Unknown list.");
+        var (bf, tabs) = L.Value;
+        baseQ = bf(baseQ);
+        var t0 = tabs.FirstOrDefault(x => x.Key == tab) ?? tabs[0];
+        // tab counts (before the search and filters), one small COUNT query each
+        var cn = new Dictionary<string, int>();
+        foreach (var t in tabs) cn[t.Key] = await t.F(baseQ).CountAsync();
+        counts = cn; byDue = t0.ByDue;
+        baseQ = t0.F(baseQ);
+        tab = t0.Key;
+    }
+    baseQ = Paging.Filter(db, baseQ, text, ent, cur, from, to, op);
+    var cursor = P("cursor");
+    if (cursor.Length > 0 && !Paging.Dec(cursor, out _, out _)) return Err("The page link is not valid.");
+    var rows = await Paging.Page(baseQ, byDue, cursor, size).ToListAsync();
+    var more = rows.Count > size; if (more) rows = rows.Take(size).ToList();
+    var ids = rows.Select(c => c.Id).ToList();
+    var (lines, files) = await LinesFiles(db, ids, withFiles: !report);
+    var last = rows.LastOrDefault();
+    var posted = report && A.Has("entries") ? await PostedFor(db, ids) : null;
+    return Ok(new
+    {
+        ok = true, list, tab, size, counts, posted,
+        rows = rows.Select(c => ChequeOut(c, lines, files)).ToList(),
+        next = more && last != null ? Paging.Enc(byDue ? last.DueDate : "", last.Seq) : null
+    });
+});
+
+// GET /api/cheque/{id}: one cheque with its lines, files and messages (for links to cheques outside the working set)
+app.MapGet("/api/cheque/{id}", async (string id, HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var s = await ss.Get(db);
+    if (Forced(u, s) != null) return Err("Password change required.", 403);
+    if (!Sec.ChequeId(id)) return Err("Not found.", 404);
+    var A = await AccessOf(db, u);
+    using var _rls = Rls.As(u, A.Scope);
+    var c = await db.Cheques.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
+    if (c == null || !A.Sees(u, c)) return Err("Not found.", 404);
+    var (lines, files) = await LinesFiles(db, new List<string> { id });
+    var msgs = (await db.Comments.AsNoTracking().Where(m => m.ChequeId == id).OrderBy(m => m.Id).Take(500).ToListAsync()).Select(m => MsgView(m, u.Id)).ToList();
+    return Ok(new { ok = true, cheque = ChequeOut(c, lines, files), comments = msgs });
+});
+
+// GET /api/rates?size=&cursor=&from=&to=  (newest first)
+app.MapGet("/api/rates", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var s = await ss.Get(db);
+    if (Forced(u, s) != null) return Err("Password change required.", 403);
+    var Q = ctx.Request.Query; string P(string k) => (Q[k].ToString() ?? "").Trim();
+    var from = P("from"); var to = P("to"); var cursor = P("cursor"); var size = Sec.PageSize(P("size"));
+    if (!Sec.Date(from) || !Sec.Date(to)) return Err("The filters are not valid.");
+    var q = db.Rates.AsNoTracking().AsQueryable();
+    if (from.Length > 0) q = q.Where(r => r.Date.CompareTo(from) >= 0);
+    if (to.Length > 0) q = q.Where(r => r.Date.CompareTo(to) <= 0);
+    if (cursor.Length > 0) { var cd = Paging.DecD(cursor); if (!Sec.Date(cd) || cd.Length == 0) return Err("The page link is not valid."); q = q.Where(r => r.Date.CompareTo(cd) < 0); }
+    var rows = await q.OrderByDescending(r => r.Date).Take(size + 1).ToListAsync();
+    var more = rows.Count > size; if (more) rows = rows.Take(size).ToList();
+    var used = await RatesUsed(db, rows.Select(r => r.Id).ToList());
+    return Ok(new { ok = true, size, total = await (from.Length > 0 || to.Length > 0 ? q : db.Rates).CountAsync(),
+        rows = rows.Select(r => new { id = r.Id, date = r.Date, QAR = r.QAR, SDG = r.SDG, setBy = r.SetBy, setAt = r.SetAt, source = r.Source ?? "", locked = used.Contains(r.Id) }).ToList(),
+        next = more ? Paging.EncD(rows[^1].Date) : null });
+});
+
+// GET /api/voided?size=&cursor=&account=  (newest first)
+app.MapGet("/api/voided", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var A = await AccessOf(db, u);
+    if (!A.Has("voided") && !A.Has("books")) return Err("Your role cannot open this list.", 403);
+    var Q = ctx.Request.Query; string P(string k) => (Q[k].ToString() ?? "").Trim();
+    var size = Sec.PageSize(P("size")); var after = Paging.DecN(P("cursor")); var acc = int.TryParse(P("account"), out var a0) ? a0 : 0;
+    var q = db.VoidedNos.AsNoTracking().AsQueryable();
+    if (acc > 0) q = q.Where(v => v.AccountId == acc);
+    if (after > 0) q = q.Where(v => v.Id < after);
+    var rows = await q.OrderByDescending(v => v.Id).Take(size + 1).ToListAsync();
+    var more = rows.Count > size; if (more) rows = rows.Take(size).ToList();
+    return Ok(new { ok = true, size, rows = rows.Select(x => new { id = x.Id, accountId = x.AccountId, number = x.Number, reason = x.Reason, by = x.By, at = x.At }).ToList(),
+        next = more ? Paging.EncN(rows[^1].Id) : null });
+});
+
+// GET /api/secret/cron: the full daily-alert link, for admins only, and every view is written to the audit log
+app.MapGet("/api/secret/cron", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
+{
+    var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
+    var s = await ss.Get(db);
+    if (Forced(u, s) != null) return Err("Password change required.", 403);
+    var A = await AccessOf(db, u);
+    if (!(A.Has("telegram", Perm.E) || A.Has("settings", Perm.E))) return Err("Your role cannot see this link.", 403);
+    Log(db, s, u.FullName, "Alert link viewed", "SETTINGS", "");
+    await db.SaveChangesAsync();
+    return Ok(new { ok = true, url = $"{BaseUrl(ctx)}/api/cron/{ss.CronKey(s)}" });
 });
 
 static object ChequeView(Cheque c, List<object> lines, List<object> files) => new
@@ -508,23 +751,40 @@ app.MapGet("/api/pulse", (HttpContext ctx) => ctx.User.Identity?.IsAuthenticated
 // Audit log: loaded only when the Audit page is opened (it used to come with every state load).
 app.MapGet("/api/audit", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
 {
+    // one page at a time (newest first) with the filters applied in SQL; the browser never holds the whole log
     var u = await CurrentUser(ctx, db); if (u == null) return Err("Please sign in again.", 401);
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
     var A = await AccessOf(db, u);
     if (!A.Has("audit")) return Err("Your role cannot open the audit log.", 403);
-    var audit = await db.Audit.AsNoTracking().OrderByDescending(a => a.Id).Take(3000)
-        .Select(a => new { at = a.At, user = a.User, action = a.Action, entity = a.Entity, details = a.Details }).ToListAsync();
-    return Ok(new { ok = true, audit });
+    var Q = ctx.Request.Query; string P(string k) => (Q[k].ToString() ?? "").Trim();
+    var text = P("q"); var who = P("user"); var from = P("from"); var to = P("to"); var cursor = P("cursor");
+    var size = Sec.PageSize(P("size"), big: P("export") == "1");
+    if (text.Length > 100 || who.Length > 150 || !Sec.Date(from) || !Sec.Date(to)) return Err("The filters are not valid.");
+    var q = db.Audit.AsNoTracking().AsQueryable();
+    if (who.Length > 0) q = q.Where(a => a.User == who);
+    if (from.Length > 0) q = q.Where(a => a.At.CompareTo(from) >= 0);
+    if (to.Length > 0) { var t2 = to + " 99"; q = q.Where(a => a.At.CompareTo(t2) <= 0); }
+    if (text.Length > 0) { var p = Paging.Like(text); q = q.Where(a => EF.Functions.Like(a.Action, p) || EF.Functions.Like(a.Entity, p) || EF.Functions.Like(a.Details, p)); }
+    if (cursor.Length > 0) { var after = Paging.DecN(cursor); if (after <= 0) return Err("The page link is not valid."); q = q.Where(a => a.Id < after); }
+    var rows = await q.OrderByDescending(a => a.Id).Take(size + 1)
+        .Select(a => new { id = a.Id, at = a.At, user = a.User, action = a.Action, entity = a.Entity, details = a.Details }).ToListAsync();
+    var more = rows.Count > size; if (more) rows = rows.Take(size).ToList();
+    var users = cursor.Length == 0 ? await db.Users.AsNoTracking().OrderBy(x => x.FullName).Select(x => x.FullName).ToListAsync() : null;
+    return Ok(new { ok = true, size, audit = rows, users, next = more ? Paging.EncN(rows[^1].id) : null });
 });
 
 app.MapGet("/api/file/{id:int}", async (int id, HttpContext ctx, AppDb db) =>
 {
     var u = await CurrentUser(ctx, db); if (u == null) return Results.StatusCode(401);
+    if (id <= 0) return Results.NotFound();
+    var A = await AccessOf(db, u);
+    using var _rls = Rls.As(u, A.Scope);   // the database itself hides files of cheques this user may not see
     var f = await db.Attachments.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id);
     if (f == null) return Results.NotFound();
     var c = await db.Cheques.AsNoTracking().FirstOrDefaultAsync(x => x.Id == f.ChequeId);
-    if (c == null || !(await AccessOf(db, u)).Sees(u, c)) return Results.NotFound();
+    if (c == null || !A.Sees(u, c)) return Results.NotFound();
+    ctx.Response.Headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox";
     return Results.File(f.Data ?? Array.Empty<byte>(), string.IsNullOrEmpty(f.ContentType) ? "application/octet-stream" : f.ContentType, f.FileName);
 });
 
@@ -532,7 +792,8 @@ app.MapGet("/api/file/{id:int}", async (int id, HttpContext ctx, AppDb db) =>
 app.MapGet("/api/cron/{key}", async (string key, AppDb db, SettingsStore ss, Notifier nf) =>
 {
     var s = await ss.Get(db);
-    if (string.IsNullOrEmpty(s.CronKey) || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(key ?? ""), Encoding.UTF8.GetBytes(s.CronKey)))
+    var ck = ss.CronKey(s);
+    if (string.IsNullOrEmpty(ck) || (key ?? "").Length > 200 || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(key ?? ""), Encoding.UTF8.GetBytes(ck)))
         return Results.NotFound();
     await nf.DailyIfDue(db);
     return Results.Text("ok");
@@ -545,6 +806,8 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
     var s = await ss.Get(db);
     if (Forced(u, s) != null) return Err("Password change required.", 403);
     var a = Str(b, "action");
+    if (!Sec.Actions.Contains(a)) return Err("Unknown action.");
+    var ve = Sec.ValidateAct(a, b); if (ve != null) return Err(ve);
     ctx.Items["act"] = a;
     var me = u.FullName;
     var roles = await AllRoles(db);
