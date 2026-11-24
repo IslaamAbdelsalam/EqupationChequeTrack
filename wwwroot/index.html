@@ -157,11 +157,21 @@ textarea.in{min-height:80px;resize:vertical}
 .sw::after{content:"";position:absolute;top:3px;inset-inline-start:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:inset-inline-start .15s}
 .sw:checked{background:var(--y)}.sw:checked::after{inset-inline-start:21px}
 .swrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line2)}
+.msgs{display:flex;flex-direction:column;gap:10px;max-height:420px;overflow-y:auto;margin-top:10px;padding-inline-end:2px}
+.msg{border:1px solid var(--in);border-radius:12px;padding:10px 12px;background:#fff;display:flex;flex-direction:column;gap:4px;max-width:94%}
+.msg.me{align-self:flex-end;background:var(--ysoft);border-color:transparent}
+.msg.new{border-color:var(--y);box-shadow:0 0 0 2px rgba(255,196,0,.25)}
+.msg .mgh{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.msg .mgt{white-space:normal;word-break:break-word;line-height:1.45}
+.kwarn{margin-bottom:0}
 .dt{position:relative}
 .dt .in{padding-inline-end:44px}
 .dtb{position:absolute;inset-inline-end:4px;top:4px;width:36px;height:36px;border:0;background:none;color:var(--mut);cursor:pointer;display:grid;place-items:center;border-radius:8px}
 .dtb:hover{background:#F1F0F5}
-.dtp{position:absolute;inset-inline-end:8px;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0}
+.dtp{position:absolute;inset-inline-end:4px;top:4px;width:36px;height:36px;min-width:36px;opacity:0;border:0;padding:0;margin:0;cursor:pointer;z-index:2;font-size:16px;-webkit-appearance:none;appearance:none;background:transparent;color:transparent}
+.dtp::-webkit-calendar-picker-indicator{position:absolute;inset:0;width:100%;height:100%;margin:0;padding:0;cursor:pointer;opacity:0}
+.dt:has(.dtp:hover) .dtb{background:#F1F0F5}
+@media (pointer:coarse){input.in,select.in,textarea.in{font-size:16px}}
 .n{width:26px;height:26px;border-radius:50%;background:#FFF1DE;color:var(--ydark);display:grid;place-items:center;font-size:13px;font-weight:700;flex:none}
 .sec-h{display:flex;align-items:center;gap:10px}
 
@@ -270,7 +280,9 @@ html[lang=ar] .tbl tr.mxg td{letter-spacing:0}
 .pol .ok{color:var(--ok)}.pol .no{color:var(--mut)}
 
 @media (max-width:1199px){
-  .side{position:fixed;inset-inline-start:-270px;z-index:60;transition:inset-inline-start .2s;box-shadow:0 0 40px rgba(0,0,0,.15)}
+  .side{position:fixed;top:0;bottom:0;inset-inline-start:-270px;z-index:60;transition:inset-inline-start .2s;box-shadow:0 0 40px rgba(0,0,0,.15);height:100%;height:100dvh;max-height:100dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y;padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+  .side .mnav{flex:none}
+  body.menuopen{overflow:hidden}
   .side.open{inset-inline-start:0}
   .side.open+.main::before{content:"";position:fixed;inset:0;background:rgba(18,18,18,.35);z-index:50}
   .top .burger{display:inline-flex}
@@ -298,11 +310,11 @@ html[lang=ar] .tbl tr.mxg td{letter-spacing:0}
 <div id="modal"></div>
 <div id="toast"></div>
 <div id="tip"></div>
-<script src="/js/i18n.js?v=2.5"></script>
-<script src="/js/app.js?v=2.5"></script>
-<script src="/js/charts.js?v=2.5"></script>
-<script src="/js/pages.js?v=2.5"></script>
-<script src="/js/pages2.js?v=2.5"></script>
+<script src="/js/i18n.js?v=2.6"></script>
+<script src="/js/app.js?v=2.6"></script>
+<script src="/js/charts.js?v=2.6"></script>
+<script src="/js/pages.js?v=2.6"></script>
+<script src="/js/pages2.js?v=2.6"></script>
 <script>boot();</script>
 </body>
 </html>

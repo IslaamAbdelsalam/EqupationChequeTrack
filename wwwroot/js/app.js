@@ -64,14 +64,41 @@ function today() { return (D && D.today) || new Date().toISOString().slice(0, 10
 function addDays(iso, n) { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
 function daysUntil(s) { if (!s) return 9999; return Math.round((new Date(s.slice(0, 10) + 'T12:00:00Z') - new Date(today() + 'T12:00:00Z')) / 864e5); }
 function dateIn(id, iso, extra) {
-  return `<div class="dt"><input class="in" id="${id}" value="${fd(iso || '')}" placeholder="dd/MM/yyyy" inputmode="numeric" autocomplete="off" dir="ltr" ${extra || ''}>` +
-    `<button type="button" class="dtb" aria-label="${t('Pick a date')}" onclick="pickDate('${id}')">${ic('cal')}</button>` +
-    `<input type="date" class="dtp" id="${id}_p" tabindex="-1" aria-hidden="true" onchange="var e=document.getElementById('${id}');e.value=fd(this.value);e.dispatchEvent(new Event('change',{bubbles:true}))"></div>`;
+  // Text field with an automatic dd/MM/yyyy mask, plus a real native date input laid (invisibly) over the
+  // calendar button. iPhone Safari only opens its picker when the date input itself is tapped, so the
+  // input must be tappable, not hidden; desktop browsers open it with showPicker().
+  return `<div class="dt"><input class="in" id="${id}" value="${fd(iso || '')}" placeholder="dd/MM/yyyy" inputmode="numeric" maxlength="10" autocomplete="off" dir="ltr" oninput="dtMask(this,event)" ${extra || ''}>` +
+    `<button type="button" class="dtb" tabindex="-1" aria-hidden="true">${ic('cal')}</button>` +
+    `<input type="date" class="dtp" id="${id}_p" aria-label="${t('Pick a date')}" onpointerdown="dtSync('${id}')" ontouchstart="dtSync('${id}')" onfocus="dtSync('${id}')" onclick="dtOpen(this)" onchange="dtPicked('${id}',this)"></div>`;
 }
-function pickDate(id) {
-  const p = document.getElementById(id + '_p'); if (!p) return;
-  p.value = pd(val(id)) || today();
-  try { p.showPicker(); } catch (e) { p.focus(); p.click(); }
+function dtSync(id) {
+  const p = document.getElementById(id + '_p'), e = document.getElementById(id); if (!p || !e) return;
+  const v = pd(e.value) || today(); if (p.value !== v) p.value = v;
+}
+function dtOpen(p) { if (p.showPicker && !/iPhone|iPad|iPod/.test(navigator.userAgent)) { try { p.showPicker(); } catch (x) { } } }
+function dtPicked(id, p) {
+  const e = document.getElementById(id); if (!e || !p.value) return;
+  e.value = fd(p.value); e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true }));
+}
+function pickDate(id) { const p = document.getElementById(id + '_p'); if (!p) return; dtSync(id); dtOpen(p); p.focus(); }
+// dd/MM/yyyy as you type: digits only on the phone keypad, the slashes are added for you;
+// typing a separator after one digit pads it ("5/" -> "05/").
+function dtMask(el, e) {
+  if (e && e.inputType && e.inputType.indexOf('delete') === 0) return;
+  const v = el.value; let d, m, y;
+  const parts = v.split(/[^\d]+/);
+  if (parts.length > 1 && parts[0].length <= 2 && (parts[1] || '').length <= 2) {
+    d = parts[0]; m = parts[1] || ''; y = parts.slice(2).join('').slice(0, 4);
+    if (d.length === 1) d = '0' + d;
+    if (m.length === 1 && parts.length > 2) m = '0' + m;
+  } else {
+    const s = v.replace(/\D/g, '').slice(0, 8); d = s.slice(0, 2); m = s.slice(2, 4); y = s.slice(4);
+  }
+  let out = d;
+  if (d.length === 2 && (m || v.length > 2 || /\d{2}$/.test(v))) out += '/' + m;
+  if (m.length === 2 && (y || out.length >= 5)) out += '/' + y;
+  if (!d) out = '';
+  if (out !== v) { el.value = out; try { el.setSelectionRange(out.length, out.length); } catch (x) { } }
 }
 function dval(id) { return pd(val(id)); }
 function dueTxt(c) {
@@ -147,7 +174,8 @@ function indexD() {
   if (!D) return;
   const by = (arr, k) => { const m = new Map(); (arr || []).forEach(x => { if (!m.has(x[k])) m.set(x[k], x); }); return m; };
   D._ix = { ben: by(D.beneficiaries, 'id'), ent: by(D.entities, 'id'), usr: by(D.users, 'id'), usrN: by(D.users, 'fullName'), dep: by(D.departments, 'id'),
-    acc: by(D.accounts, 'id'), bank: by(D.banks, 'id'), kop: by(D.contracts, 'opNo'), role: by(D.roles, 'key'), rate: new Map() };
+    acc: by(D.accounts, 'id'), bank: by(D.banks, 'id'), kop: by(D.contracts, 'opNo'), kref: by(D.contractRefs, 'opNo'), role: by(D.roles, 'key'), chq: by(D.cheques, 'id'), rate: new Map(), msg: new Map() };
+  (D.comments || []).forEach(m => { const a = D._ix.msg.get(m.chequeId); if (a) a.push(m); else D._ix.msg.set(m.chequeId, [m]); });
 }
 const IX = () => D._ix || (indexD(), D._ix);
 const B = id => IX().ben.get(id) || NOBEN;
@@ -157,6 +185,10 @@ const Dp = id => IX().dep.get(id) || NODEP;
 const AC = id => IX().acc.get(id);
 const BK = id => IX().bank.get(id);
 const K = op => IX().kop.get(op);
+/** Light contract record that every user receives (number, financier, currency, expiry, status). */
+const KR = op => (op && (IX().kref.get(op) || IX().kop.get(op))) || null;
+/** Messages written on a request, oldest first. */
+const MSGS = id => IX().msg.get(id) || [];
 const R = () => S.user.role;
 /** A user's name in the reader's language (English name when no Arabic one is saved). */
 function un(u) { if (!u) return '—'; return LANG === 'ar' && u.fullNameAr ? u.fullNameAr : (u.fullName || u.fullNameAr || '—'); }
@@ -284,16 +316,16 @@ function route() {
   const r = parseHash();
   if (r.page === 'reset') { S.resetToken = r.arg; S.resetInfo = null; history.replaceState(null, '', location.pathname); }
   else { S.page = r.page; S.arg = r.arg; S.q = r.q; }
-  closeM(); S.side = false;
+  closeM(); S.side = false; document.body.classList.remove('menuopen');
   render(); window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
 function toggleMenu() {
-  if (window.matchMedia('(max-width:1199px)').matches) { S.side = !S.side; document.querySelector('.side')?.classList.toggle('open', S.side); }
+  if (window.matchMedia('(max-width:1199px)').matches) { S.side = !S.side; document.querySelector('.side')?.classList.toggle('open', S.side); document.body.classList.toggle('menuopen', S.side); }
   else { const off = document.body.classList.toggle('nomenu'); try { localStorage.setItem('ct.nomenu', off ? '1' : ''); } catch (e) { } }
 }
 try { if (localStorage.getItem('ct.nomenu')) document.body.classList.add('nomenu'); } catch (e) { }
-document.addEventListener('click', e => { if (S.side && !e.target.closest('.side,.burger')) { S.side = false; document.querySelector('.side')?.classList.remove('open'); } });
+document.addEventListener('click', e => { if (S.side && !e.target.closest('.side,.burger')) { S.side = false; document.querySelector('.side')?.classList.remove('open'); document.body.classList.remove('menuopen'); } });
 
 function menu() {
   const tasks = myTasks();
@@ -396,8 +428,46 @@ function myTasks() {
     if (st.closed || !st.attention) continue;
     if (k.ownerId ? k.ownerId === me : has('contracts', 'follow')) out.push({ c: null, k, kind: 'contract', act: t('Follow up') });
   }
+  // messages on a request that were written to me and that I have not read yet
+  const unread = new Map();
+  for (const m of D.comments || []) if (!m.read && m.byId !== me) {
+    const c = IX().chq ? IX().chq.get(m.chequeId) : D.cheques.find(x => x.id === m.chequeId);
+    if (c && msgForMe(m, c)) unread.set(c.id, (unread.get(c.id) || []).concat(m));
+  }
+  for (const [id, ms] of unread) out.unshift({ c: IX().chq.get(id), kind: 'msg', msgs: ms, act: t('Reply') });
   if (has('rates', 'create') && !D.rates.some(x => x.date === today())) out.unshift({ c: null, kind: 'rate', act: t('Enter rate') });
   return out;
+}
+/* ---------- messages on a request ---------- */
+const MSG_TO = { all: 'Everyone on this request', requester: 'The requester', approver: 'Approvers (CFO / Top Management)', finance: 'Finance', user: 'A specific person' };
+const MSG_KINDS = ['Query', 'Document change', 'Modification', 'Answer', 'Note'];
+/** Is this message addressed to me? */
+function msgForMe(m, c) {
+  const me = S.user.id;
+  if (m.byId === me) return false;
+  switch (m.to) {
+    case 'requester': return c.requesterId === me;
+    case 'approver': return can.approve() || can.approve2();
+    case 'finance': return can.issue() || can.clear() || can.settle();
+    case 'user': return m.toUserId === me;
+    default: return true;
+  }
+}
+function msgToTxt(m) { return m.to === 'user' ? UN(m.toUserId) : t(MSG_TO[m.to] || MSG_TO.all); }
+/* ---------- contract checks on a request: they warn, they never block ---------- */
+function kWarns(opNos, due) {
+  const out = [];
+  [...new Set((opNos || []).map(o => String(o || '').trim()).filter(Boolean))].forEach(op => {
+    const k = KR(op); if (!k || k.status === 'Closed') return;
+    const exp = kExp(k); if (!exp) return;
+    if (exp < today()) out.push(t('Contract {o} expired on {d}.', { o: op, d: fd(exp) }));
+    else if (due && due > exp) out.push(t('The due date {due} is after contract {o} expires on {d}.', { due: fd(due), o: op, d: fd(exp) }));
+  });
+  return out;
+}
+function chqWarns(c) { return isFin(c) ? kWarns((c.lines || []).map(l => l.opNo), c.dueDate) : []; }
+function kWarnBox(ws, note) {
+  return ws.length ? `<div class="warnbox kwarn" role="alert">${ic('alert')}<div>${ws.map(w => `<div class="b">${esc(w)}</div>`).join('')}${note ? `<div class="sm" style="margin-top:4px">${note}</div>` : ''}</div></div>` : '';
 }
 /** Where a contract stands: expired, inside its reminder period, follow-up due, closed. */
 function kExp(k) { return k.expiryDate || k.endDate; }

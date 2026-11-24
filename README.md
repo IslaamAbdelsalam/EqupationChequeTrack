@@ -18,6 +18,17 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 - **Telegram:** daily digest and stage alerts (optional, can be hidden).
 - **Upgrade:** an existing v1 database is upgraded in place on start-up (`Schema.cs`); old cheques are kept.
 
+## What's new in v3.2
+
+- **Messages on each request.** The requester, the CFO / Top Management and Finance can write to each other on the cheque page. Each message has a type (Query, Document change, Modification, Answer, Note) and goes to everyone on the request, the requester, the approvers, Finance or one named person. The **Messages** card shows from, to, when, the stage and the text. Unread messages addressed to you appear on the Home board under "Waiting for you" and in the menu count. Opening the request marks them as read. Stored in the new `dbo.Comments` table, which is created automatically at start-up.
+- **Requests are linked to contracts.** Financing lines now pick the contract from the register for every requester, including roles that cannot open the contracts page. Each option shows its expiry date. The cheque page shows a **Linked contract** card.
+- **Expired-contract warning that does not block.** If the contract has expired, or the request's due date is after the contract's expiry, the requester sees a warning and can choose **Submit anyway**. The same warning shows as a banner (and a short notice) every time the request is opened while it is still open.
+- **iPhone fixes.**
+  - The date fields add the slashes as you type (dd/MM/yyyy).
+  - Tapping the calendar icon opens the iOS date picker.
+  - Input text is 16 px on touch screens, so Safari does not zoom in.
+  - The side menu scrolls to the end on phones, and the page behind it stays still.
+
 ## Tech stack
 
 - ASP.NET Core minimal APIs (.NET 9, rolls forward to newer runtimes)

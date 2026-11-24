@@ -210,6 +210,8 @@ public static class Lists
     public const string Poa = "Payment on account";
     public static readonly string[] OpTypes = { "Supplier payment", "Financing instalment", "Final settlement", "Institutional instalment", Poa, "Other" };
     public static readonly string[] Financing = { "Financing instalment", "Final settlement", "Institutional instalment" };
+    public static readonly string[] CommentKinds = { "Query", "Document change", "Modification", "Answer", "Note" };
+    public static readonly string[] CommentTo = { "all", "requester", "approver", "finance", "user" };
     public static readonly string[] SplitRequired = { "Final settlement", "Institutional instalment" };
     public static readonly string[] Purposes = { "Payment", "Guarantee" };
     public static readonly string[] BenTypes = { "Supplier", "Financier", "Customer", "Employee", "Other" };

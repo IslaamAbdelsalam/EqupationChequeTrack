@@ -328,6 +328,22 @@ public class Setting
     public string Value { get; set; } = "";
 }
 
+/// A message on a request: questions, document changes and answers between the requester, the CFO and Finance.
+public class Comment
+{
+    public long Id { get; set; }
+    [MaxLength(20)] public string ChequeId { get; set; } = "";
+    [MaxLength(20)] public string At { get; set; } = "";
+    public int ById { get; set; }
+    [MaxLength(150)] public string ByName { get; set; } = "";
+    [MaxLength(20)] public string ToKind { get; set; } = "all";      // all | requester | approver | finance | user
+    public int? ToUserId { get; set; }
+    [MaxLength(20)] public string Stage { get; set; } = "";          // cheque status when it was written
+    [MaxLength(30)] public string Kind { get; set; } = "Note";       // Query | Document change | Modification | Answer | Note
+    [MaxLength(2000)] public string Text { get; set; } = "";
+    [MaxLength(2000)] public string ReadBy { get; set; } = "|";      // |userId|userId| who has read it
+}
+
 public class TgMessage
 {
     public long Id { get; set; }
@@ -363,6 +379,7 @@ public class AppDb : DbContext, IDataProtectionKeyContext
     public DbSet<AuditEntry> Audit => Set<AuditEntry>();
     public DbSet<Setting> Settings => Set<Setting>();
     public DbSet<TgMessage> TgMessages => Set<TgMessage>();
+    public DbSet<Comment> Comments => Set<Comment>();
     public DbSet<DataProtectionKey> DataProtectionKeys { get; set; }
 
     protected override void OnModelCreating(ModelBuilder b)
@@ -373,6 +390,7 @@ public class AppDb : DbContext, IDataProtectionKeyContext
         b.Entity<Cheque>().HasIndex(x => x.Status);
         b.Entity<Cheque>().HasIndex(x => x.RequesterId);
         b.Entity<Cheque>().HasIndex(x => x.DeptId);
+        b.Entity<Comment>().HasIndex(x => x.ChequeId);
         b.Entity<TgMessage>().HasIndex(x => new { x.Kind, x.Day });
         b.Entity<Contract>().HasIndex(x => x.OpNo).IsUnique();
         b.Entity<ChequeLine>().HasIndex(x => x.ChequeId);

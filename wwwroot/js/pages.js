@@ -54,6 +54,10 @@ function homePage() {
       return `<div class="task"><div style="flex:1 1 240px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${esc(k.opNo)}</bdi>${kChip(k)}${s.due ? `<span class="chip c-2nd">${t('Follow-up due')}</span>` : ''}</div>
         <div style="margin-top:3px">${esc(nm(B(k.financierId)))}</div><div class="sm mut">${t('Contract expiry {d}', { d: fd(kExp(k)) })}${k.followUpDate ? ' · ' + t('next follow-up {d}', { d: fd(k.followUpDate) }) : ''}</div></div>
         <button class="btn btn-y btn-sm" onclick="kFollowModal(${k.id})">${x.act}</button></div>`; }
+    if (x.kind === 'msg') { const c = x.c, m = x.msgs[x.msgs.length - 1];
+      return `<div class="task"><div style="flex:1 1 240px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${c.id}</bdi><span class="chip c-2nd">${x.msgs.length > 1 ? t('{n} new messages', { n: x.msgs.length }) : t('New message')}</span><span class="chip c-pend">${t(m.kind)}</span></div>
+        <div style="margin-top:3px">${t('From {n}', { n: esc(m.by) })} · ${esc(nm(B(c.benId)))}</div><div class="sm mut" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.text)}</div><div class="sm mut">${FD(m.at)}</div></div>
+        <a class="btn btn-y btn-sm" href="#/cheque/${c.id}">${x.act}</a></div>`; }
     if (x.kind === 'rate') return `<div class="task"><div style="flex:1 1 240px"><div class="b">${t("Today's exchange rate is missing")}</div><div class="sm mut">${t('Approvals, issues and clearing need it.')}</div></div><a class="btn btn-y btn-sm" href="#/rates">${x.act}</a></div>`;
     const c = x.c, need = c.status === 'Pending' ? need2Reasons(usdOf(c), c.related, c.priorPaid) : [];
     return `<div class="task"><div style="flex:1 1 240px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${c.id}</bdi>${chip(c.status)}</div>
@@ -229,13 +233,16 @@ function nfSummary() {
   const n = S.nf, x = nfCalc(), ent = E(+n.entityId);
   const need = x.usd != null ? need2Reasons(x.usd, n.related, n.priorPaid) : need2Reasons(0, n.related, n.priorPaid);
   const checks = [];
-  if (x.fin && seesContracts()) n.lines.filter(l => l.opNo).forEach(l => {
-    const k = K(l.opNo);
+  if (x.fin) n.lines.filter(l => l.opNo).forEach(l => {
+    const k = KR(l.opNo), full = K(l.opNo);
     if (!k) checks.push([false, t('Operation {o} is not in the contracts register', { o: l.opNo })]);
+    else if (k.status === 'Closed') checks.push([false, t('Operation {o} is closed in the contracts register', { o: l.opNo })]);
     else if (k.financierId !== +n.benId) checks.push([false, t('Operation {o} belongs to another financier', { o: l.opNo })]);
     else if (k.currency !== n.currency) checks.push([false, t('Operation {o} is in {c}', { o: l.opNo, c: k.currency })]);
-    else { const rem = contractRemaining(k); checks.push([num(l.principal) <= rem, t('Contract {o}: remaining principal {r}', { o: l.opNo, r: money(rem, k.currency) })]); }
+    else if (full && full.principal != null) { const rem = contractRemaining(full); checks.push([num(l.principal) <= rem, t('Contract {o}: remaining principal {r}', { o: l.opNo, r: money(rem, k.currency) })]); }
+    else checks.push([true, t('Linked to contract {o}', { o: l.opNo })]);
   });
+  const kw = x.fin ? kWarns(n.lines.map(l => l.opNo), n.dueDate) : [];
   const hasAcct = D.acctCurs.some(a => a.entityId === +n.entityId && a.cur === n.payCur);
   checks.push([hasAcct, hasAcct ? t('{e} has a bank account in {c}', { e: nm(ent), c: n.payCur }) : t('{e} has no bank account in {c}', { e: nm(ent), c: n.payCur })]);
   checks.push([n.files.some(f => f.kind === 'doc'), t('Supporting document attached')]);
@@ -250,11 +257,13 @@ function nfSummary() {
    ${n.payCur !== n.currency ? `<div class="okl" style="margin-top:10px">${ic('info')}<span>${t('Paid in {p}: the cheque amount is set with the issue-day rate.', { p: n.payCur })}</span></div>` : ''}
    <div class="dv"></div><div class="sm mut">${t('Approval route')}</div><div class="b">${need.length ? t('CFO, then Top Management') : t('CFO only')}</div>
    <div class="sm mut">${need.length ? esc(need.join(', ')) : t('Below {n} USD and not a related party', { n: (+D.settings.secondLimitUsd).toLocaleString('en-US') })}</div>
+   ${kw.length ? `<div class="dv"></div>${kWarnBox(kw, t('You can still submit; the CFO will see this warning.'))}` : ''}
    <div class="dv"></div><div style="display:flex;flex-direction:column;gap:8px">${checks.map(([ok, s]) => `<div class="okl ${ok ? '' : 'no'}">${ic(ok ? 'check' : 'x')}<span>${esc(s)}</span></div>`).join('')}</div>
    <button class="btn btn-y w" style="margin-top:20px" onclick="submitReq(false)">${t('Submit for approval')}</button>
    <button class="btn btn-o w" style="margin-top:10px" onclick="S.nf=null;go('mine')">${t('Cancel')}</button>`;
 }
-function refreshSum() { const e = document.getElementById('nf_sum'); if (e) e.innerHTML = nfSummary(); const r = document.getElementById('nf_rem'); if (r) r.classList.toggle('hide', !nfCalc().partial); }
+function refreshSum() { const e = document.getElementById('nf_sum'); if (e) e.innerHTML = nfSummary();
+  const w = document.getElementById('nf_kw'); if (w && S.nf) w.innerHTML = FINANCING.includes(S.nf.opType) ? kWarnBox(kWarns(S.nf.lines.map(l => l.opNo), S.nf.dueDate)) : ''; const r = document.getElementById('nf_rem'); if (r) r.classList.toggle('hide', !nfCalc().partial); }
 function contractRemaining(k) {
   const used = D.cheques.filter(c => !['Rejected', 'Cancelled'].includes(c.status)).flatMap(c => c.lines).filter(l => l.opNo === k.opNo).reduce((a, l) => a + (+l.principal || 0), 0);
   return +k.principal - used;
@@ -265,9 +274,11 @@ function newRequestPage() {
   const n = S.nf, fin = FINANCING.includes(n.opType), split = SPLIT.includes(n.opType), x = nfCalc();
   const bens = D.beneficiaries.slice().sort((a, b) => nm(a).localeCompare(nm(b)));
   const opt = (arr, v, lab) => arr.map(o => `<option value="${esc(o)}" ${o === v ? 'selected' : ''}>${esc(lab ? lab(o) : o)}</option>`).join('');
-  const contracts = D.contracts.filter(k => k.financierId === +n.benId && k.currency === n.currency);
+  // every requester picks the contract from the register (light list sent to all users)
+  const contracts = (D.contractRefs || D.contracts || []).filter(k => k.financierId === +n.benId && k.currency === n.currency && k.status !== 'Closed');
+  const kOpt = k => { const e = kExp(k), x = e && e < today(); return `${k.opNo}${e ? ' · ' + (x ? t('expired {d}', { d: fd(e) }) : t('expires {d}', { d: fd(e) })) : ''}`; };
   const lineRow = (l, i) => `<tr>
-    ${fin ? `<td>${!seesContracts() ? `<input class="in" aria-label="${t('Operation no.')}" value="${esc(l.opNo)}" oninput="nfl(${i},'opNo',this.value)">` : `<select class="in" aria-label="${t('Operation no.')}" onchange="nfl(${i},'opNo',this.value)"><option value="">${contracts.length ? t('Choose') : t('No contract')}</option>${contracts.map(k => `<option ${k.opNo === l.opNo ? 'selected' : ''}>${esc(k.opNo)}</option>`).join('')}${l.opNo && !contracts.some(k => k.opNo === l.opNo) ? `<option selected>${esc(l.opNo)}</option>` : ''}</select>`}</td>
+    ${fin ? `<td>${!contracts.length ? `<input class="in" aria-label="${t('Operation no.')}" value="${esc(l.opNo)}" placeholder="${t('Contract no.')}" oninput="nfl(${i},'opNo',this.value)">` : `<select class="in" aria-label="${t('Contract')}" style="min-width:190px" onchange="nfl(${i},'opNo',this.value)"><option value="">${t('Choose the contract')}</option>${contracts.map(k => `<option value="${esc(k.opNo)}" ${k.opNo === l.opNo ? 'selected' : ''}>${esc(kOpt(k))}</option>`).join('')}${l.opNo && !contracts.some(k => k.opNo === l.opNo) ? `<option selected>${esc(l.opNo)}</option>` : ''}</select>`}</td>
       <td><input class="in" aria-label="${t('Instalment')}" value="${esc(l.instNo)}" inputmode="numeric" oninput="nfl(${i},'instNo',this.value)" style="width:84px"></td>
       <td><input class="in" aria-label="${t('Month')}" value="${esc(l.month)}" placeholder="MM/yyyy" dir="ltr" oninput="nfl(${i},'month',this.value)" style="width:104px"></td>`
       : `<td><input class="in" aria-label="${t('Reference')}" value="${esc(l.opNo)}" placeholder="${t('Invoice or PO no.')}" oninput="nfl(${i},'opNo',this.value)"></td>`}
@@ -299,9 +310,10 @@ function newRequestPage() {
       <div class="fg"><label class="lbl" for="nf_pc">${t('Payment currency')} <span class="req">*</span></label><select class="in" id="nf_pc" onchange="nfs('payCur',this.value,true)">${opt(CURS, n.payCur)}</select>
        ${n.payCur !== n.currency ? `<div class="hint">${t('Differs from the contract currency, so the cheque amount is set with the issue-day rate.')}</div>` : ''}</div>
      </div>
-     ${fin && n.benId && !contracts.length && seesContracts() ? `<div class="warnbox" style="margin-top:14px">${ic('alert')}<span>${t('No contract is registered for this financier in {c}. Finance must register it first.', { c: n.currency })}</span></div>` : ''}
+     ${fin ? `<div id="nf_kw" style="margin-top:14px">${kWarnBox(kWarns(n.lines.map(l => l.opNo), n.dueDate))}</div>` : ''}
+     ${fin && n.benId && !contracts.length ? `<div class="warnbox" style="margin-top:14px">${ic('alert')}<span>${t('No contract is registered for this financier in {c}. Finance must register it first.', { c: n.currency })}</span></div>` : ''}
      <div class="tw" style="margin-top:16px"><table class="tbl sm" style="min-width:${fin ? 880 : 640}px"><thead><tr>
-      ${fin ? `<th>${t('Operation no.')}</th><th>${t('Instalment')}</th><th>${t('Month')}</th>` : `<th>${t('Reference')}</th>`}
+      ${fin ? `<th>${t('Contract')}</th><th>${t('Instalment')}</th><th>${t('Month')}</th>` : `<th>${t('Reference')}</th>`}
       <th class="num">${t('Due')}</th><th class="num">${t('Paid before')}</th><th class="num">${t('Requested now')}</th>${fin ? `<th class="num">${t('Principal')}${split ? ' *' : ''}</th>` : ''}<th></th></tr></thead>
       <tbody>${n.lines.map(lineRow).join('')}</tbody></table></div>
      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px">
@@ -350,15 +362,17 @@ function newRequestPage() {
    <aside class="col1"><section class="card" id="nf_sum" style="position:sticky;top:84px">${nfSummary()}</section></aside>
   </div>`;
 }
-async function submitReq(confirmDup) {
+async function submitReq(confirmDup, confirmK) {
   const n = S.nf;
   const lines = n.lines.map(l => ({ opNo: l.opNo.trim(), instNo: parseInt(l.instNo, 10) || 0, month: l.month ? (pmon(l.month) || l.month) : '', due: num(l.due), paidBefore: num(l.paidBefore), requested: num(l.requested), principal: num(l.principal) }));
   if (!n.benId) { toast(t('Choose a beneficiary.')); return; }
   if (lines.some(l => l.month && !/^\d{4}-\d{2}$/.test(l.month))) { toast(t('Month must look like 11/2026.')); return; }
+  const kw = FINANCING.includes(n.opType) ? kWarns(lines.map(l => l.opNo), n.dueDate) : [];
+  if (kw.length && !confirmK) { confirmBox(t('Contract expiry'), kWarnBox(kw, t('Do you want to submit the request anyway? The CFO will see this warning.')), t('Submit anyway'), () => submitReq(confirmDup, true)); return; }
   const body = Object.assign({}, n, { lines, files: n.files.map(f => ({ kind: f.kind, name: f.name, type: f.type, data: f.data })), confirmDup: !!confirmDup });
   const j = await act('submitReq', body, null, { raw: true });
   if (!j) return;
-  if (j.dup) { confirmBox(t('Possible duplicate'), `<div class="warnbox">${ic('alert')}<span>${esc(j.error)}</span></div>`, t('Submit anyway'), () => submitReq(true)); return; }
+  if (j.dup) { confirmBox(t('Possible duplicate'), `<div class="warnbox">${ic('alert')}<span>${esc(j.error)}</span></div>`, t('Submit anyway'), () => submitReq(true, true)); return; }
   if (j.ok) { S.nf = null; toast(t('Request {id} sent to the CFO.', { id: j.id })); go('cheque/' + j.id); }
 }
 
@@ -379,7 +393,10 @@ function chequePage(id) {
   const acts = actionPanel(c);
   const L = c.lines || [];
   const fin = isFin(c);
+  const kw = ['Rejected', 'Cancelled', 'Cleared', 'Solved'].includes(c.status) ? [] : chqWarns(c);
+  if (kw.length) { S._kwSeen = S._kwSeen || {}; if (!S._kwSeen[c.id]) { S._kwSeen[c.id] = 1; setTimeout(() => toast(kw[0]), 50); } }
   const left = `
+   ${kWarnBox(kw, t('The request can continue; check the contract renewal with Finance.'))}
    ${acts}
    <section class="card"><h2 class="h3">${t('Request')}</h2><div class="pairs">
     ${pair(t('Entity'), `${esc(nm(ent))} · ${t('functional currency {c}', { c: fc })}`)}${pair(t('Operation type'), t(c.opType))}${pair(t('Purpose'), t(c.purpose))}
@@ -404,9 +421,62 @@ function chequePage(id) {
     ${c.closed && c.closed.reason ? pair(t('Return reason'), esc(c.closed.reason)) : ''}${c.solved ? pair(t('Settled'), `${t(c.solved.method || '')} · ${esc(c.solved.note)} · ${esc(byN(c.solved.by))}`) : ''}
     ${c.poa ? pair(t('Payment on account settled'), `${esc(c.poa.reference)} · ${esc(byN(c.poa.by))} · ${FD(c.poa.at)}`) : ''}</div></section>` : ''}
    <section class="card"><h2 class="h3" style="margin-bottom:14px">${t('History')}</h2>${chqHistory(c).map(h => `<div class="tl"><div>${h[0]}</div><div class="sm mut">${FD(h[1])}</div></div>`).join('')}</section>`;
-  const right = `${ratesCard(c)}${entriesCard(c)}`;
+  const right = `${msgCard(c)}${contractCard(c)}${ratesCard(c)}${entriesCard(c)}`;
+  msgMarkRead(c);
   return `${head}<section class="card" aria-label="${t('Progress')}" style="overflow-x:auto">${stepper(c)}</section>
    <div class="row" style="gap:20px"><div class="col2" style="flex:3 1 520px">${left}</div><div class="col1" style="flex:2 1 340px">${right}</div></div>`;
+}
+/** The contracts this request pays, with their expiry. */
+function contractCard(c) {
+  if (!isFin(c)) return '';
+  const ops = [...new Set((c.lines || []).map(l => l.opNo).filter(Boolean))];
+  if (!ops.length) return '';
+  return `<section class="card"><h2 class="h3" style="margin-bottom:10px">${t('Linked contract')}</h2>${ops.map(op => {
+    const k = KR(op), full = K(op), e = k && kExp(k);
+    if (!k) return `<div class="task"><div style="flex:1"><bdi class="b" dir="ltr">${esc(op)}</bdi><div class="sm late">${t('Not in the contracts register')}</div></div></div>`;
+    const open = full && has('contracts') ? ` click" onclick="kModal(${full.id})` : '';
+    return `<div class="task${open}"><div style="flex:1 1 200px;min-width:0"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><bdi class="b" dir="ltr">${esc(op)}</bdi>${kChip(k)}</div>
+      <div style="margin-top:3px">${esc(nm(B(k.financierId)))} · ${k.currency}</div>
+      <div class="sm mut">${t('Contract expiry {d}', { d: fd(e) || '—' })}${e && c.dueDate > e ? ' · <span class="late">' + t('request due {d}', { d: fd(c.dueDate) }) + '</span>' : ''}</div></div>
+      ${open ? `<span class="btn btn-o btn-sm">${t('Open')}</span>` : ''}</div>`;
+  }).join('')}</section>`;
+}
+/** Messages between the stages of the request: questions, document changes, modifications, answers. */
+function msgCard(c) {
+  const ms = MSGS(c.id), me = S.user.id;
+  const others = [...new Set([c.requesterId, c.appr && c.appr.byId, c.appr2 && c.appr2.byId, c.issue && c.issue.byId].filter(x => x && x !== me))];
+  const users = D.users.filter(u => u.active && u.id !== me).sort((a, b) => un(a).localeCompare(un(b)));
+  const toOpt = ['all', 'requester', 'approver', 'finance', 'user'].filter(k => !(k === 'requester' && c.requesterId === me));
+  const f = S.msgF && S.msgF.id === c.id ? S.msgF : (S.msgF = { id: c.id, to: c.requesterId === me ? 'approver' : 'requester', kind: 'Query', user: others[0] || 0, text: '' });
+  const list = ms.length ? ms.map(m => `<div class="msg ${m.byId === me ? 'me' : ''} ${!m.read && m.byId !== me ? 'new' : ''}">
+      <div class="mgh"><span class="b">${esc(m.by)}</span><span class="mut">→ ${esc(msgToTxt(m))}</span><span class="chip c-2nd">${t(m.kind)}</span></div>
+      <div class="mgt">${esc(m.text).replace(/\n/g, '<br>')}</div>
+      <div class="sm mut">${FD(m.at)} · ${t('stage: {s}', { s: t((STAGES[m.stage] || [m.stage])[0]) })}</div></div>`).join('')
+    : `<div class="empty sm">${t('No messages yet. Ask a question or request a change here.')}</div>`;
+  return `<section class="card" id="msgs"><div class="chead"><h2 class="h3">${t('Messages')}</h2><span class="sm mut">${ms.length ? N(ms.length) : ''}</span></div>
+   <div class="msgs">${list}</div>
+   <div class="dv"></div>
+   <div class="fgrid" style="margin-top:0">
+    <div class="fg"><label class="lbl" for="m_to">${t('To')}</label><select class="in" id="m_to" onchange="S.msgF.to=this.value;render()">${toOpt.map(k => `<option value="${k}" ${f.to === k ? 'selected' : ''}>${t(MSG_TO[k])}</option>`).join('')}</select></div>
+    ${f.to === 'user' ? `<div class="fg"><label class="lbl" for="m_u">${t('Person')}</label><select class="in" id="m_u" onchange="S.msgF.user=+this.value"><option value="0">${t('Choose')}</option>${users.map(u => `<option value="${u.id}" ${u.id === +f.user ? 'selected' : ''}>${esc(un(u))}</option>`).join('')}</select></div>` : ''}
+    <div class="fg"><label class="lbl" for="m_k">${t('Type')}</label><select class="in" id="m_k" onchange="S.msgF.kind=this.value">${MSG_KINDS.map(k => `<option value="${k}" ${f.kind === k ? 'selected' : ''}>${t(k)}</option>`).join('')}</select></div>
+    <div class="fg full"><label class="lbl" for="m_tx">${t('Message')}</label><textarea class="in" id="m_tx" rows="3" maxlength="2000" oninput="S.msgF.text=this.value">${esc(f.text)}</textarea></div>
+   </div>
+   <button class="btn btn-y btn-sm" style="margin-top:12px" onclick="msgSend('${c.id}')">${ic('check')}${t('Send')}</button></section>`;
+}
+async function msgSend(id) {
+  const f = S.msgF; if (!f || f.id !== id) return;
+  const text = (f.text || '').trim(); if (!text) { toast(t('Write the message.')); return; }
+  if (f.to === 'user' && !+f.user) { toast(t('Choose who the message is for.')); return; }
+  const j = await act('comment', { id, to: f.to, toUserId: +f.user || 0, kind: f.kind, text }, t('Message sent.'));
+  if (j && j.ok) { S.msgF = null; render(); }
+}
+function msgMarkRead(c) {
+  const un = MSGS(c.id).filter(m => !m.read && m.byId !== S.user.id);
+  if (!un.length) return;
+  un.forEach(m => m.read = true);
+  api('/api/act', { action: 'readComments', id: c.id });
+  setTimeout(() => { const y = window.scrollY; render(); window.scrollTo(0, y); }, 0);
 }
 function pair(l, v) { return `<div><div class="pl">${l}</div><div class="pv">${v}</div></div>`; }
 

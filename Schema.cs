@@ -61,6 +61,13 @@ public static class Schema
             [Perms] nvarchar(max) NULL, [BuiltIn] bit NOT NULL, [Notes] nvarchar(300) NULL, [UpdatedBy] nvarchar(150) NULL, [UpdatedAt] nvarchar(20) NULL)",
         @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Roles_Key' AND object_id = OBJECT_ID(N'dbo.Roles'))
             CREATE UNIQUE INDEX IX_Roles_Key ON dbo.Roles([Key]) WHERE [Key] IS NOT NULL",
+        // v3.2: messages between the stages of a request
+        @"IF OBJECT_ID(N'dbo.Comments', N'U') IS NULL CREATE TABLE dbo.Comments (
+            [Id] bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_Comments PRIMARY KEY,
+            [ChequeId] nvarchar(20) NULL, [At] nvarchar(20) NULL, [ById] int NOT NULL, [ByName] nvarchar(150) NULL,
+            [ToKind] nvarchar(20) NULL, [ToUserId] int NULL, [Stage] nvarchar(20) NULL, [Kind] nvarchar(30) NULL,
+            [Text] nvarchar(2000) NULL, [ReadBy] nvarchar(2000) NULL,
+            INDEX IX_Comments_ChequeId NONCLUSTERED ([ChequeId]))",
         // speed: department-scoped cheque lists
         @"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_Cheques_DeptId' AND object_id = OBJECT_ID(N'dbo.Cheques'))
             CREATE INDEX IX_Cheques_DeptId ON dbo.Cheques([DeptId])",

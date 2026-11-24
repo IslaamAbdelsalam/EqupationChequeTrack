@@ -388,6 +388,13 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
     var lines = (await db.ChequeLines.AsNoTracking().Where(l => ids.Contains(l.ChequeId)).ToListAsync()).GroupBy(l => l.ChequeId).ToDictionary(g => g.Key, g => g.OrderBy(l => l.Id).ToList());
     var files = (await db.Attachments.AsNoTracking().Where(a => ids.Contains(a.ChequeId))
         .Select(a => new { a.Id, a.ChequeId, a.Kind, a.FileName, a.Size, a.By, a.At }).ToListAsync()).GroupBy(a => a.ChequeId).ToDictionary(g => g.Key, g => g.ToList());
+    var msgs = (await db.Comments.AsNoTracking().Where(m => ids.Contains(m.ChequeId)).OrderBy(m => m.Id).ToListAsync())
+        .Select(m => new { id = m.Id, chequeId = m.ChequeId, at = m.At, byId = m.ById, by = m.ByName, to = m.ToKind, toUserId = m.ToUserId, stage = m.Stage, kind = m.Kind, text = m.Text,
+            read = (m.ReadBy ?? "").Contains("|" + myId + "|") }).ToList();
+    var contractRefs = (await db.Contracts.AsNoTracking().OrderBy(c => c.OpNo)
+        .Select(x => new { x.Id, x.OpNo, x.FinancierId, x.EntityId, x.Currency, x.EndDate, x.ExpiryDate, x.Status }).ToListAsync())
+        .Select(x => new { id = x.Id, opNo = x.OpNo, financierId = x.FinancierId, entityId = x.EntityId, currency = x.Currency,
+            expiryDate = string.IsNullOrEmpty(x.ExpiryDate) ? x.EndDate : x.ExpiryDate, status = string.IsNullOrEmpty(x.Status) ? "Active" : x.Status }).ToList();
     var cheques = chq.Select(c => ChequeView(c,
         lines.TryGetValue(c.Id, out var ls) ? ls.Select(l => (object)new { opNo = l.OpNo, instNo = l.InstNo, month = l.Month, due = l.Due, paidBefore = l.PaidBefore, requested = l.Requested, principal = l.Principal }).ToList() : new List<object>(),
         files.TryGetValue(c.Id, out var fs) ? fs.Select(f => (object)new { id = f.Id, kind = f.Kind, name = f.FileName, size = f.Size, by = f.By, at = f.At }).ToList() : new List<object>())).ToList();
@@ -450,7 +457,7 @@ app.MapGet("/api/state", async (HttpContext ctx, AppDb db, SettingsStore ss) =>
         users = uv,
         beneficiaries = await db.Beneficiaries.AsNoTracking().OrderBy(x => x.NameEn)
             .Select(x => new { id = x.Id, code = x.Code ?? "", type = x.Type, nameEn = x.NameEn, nameAr = x.NameAr, contact = x.Contact, phone = x.Phone, email = x.Email }).ToListAsync(),
-        benUse, rates, settings, cheques, tgFeed, alerts, acctCurs,
+        benUse, rates, settings, cheques, tgFeed, alerts, acctCurs, comments = msgs, contractRefs,
         banks = seeBanks ? banks.Select(x => (object)new { id = x.Id, nameEn = x.NameEn, nameAr = x.NameAr, currency = x.Currency, active = x.Active }).ToList() : new List<object>(),
         accounts = seeBanks ? accounts.Select(x => (object)new { id = x.Id, bankId = x.BankId, entityId = x.EntityId, description = x.Description, last4 = x.Last4, ledger = x.Ledger, active = x.Active, currency = bankCur.GetValueOrDefault(x.BankId) }).ToList() : new List<object>(),
         books = seeBooks ? (await db.Chequebooks.AsNoTracking().ToListAsync()).Select(x => (object)new { id = x.Id, accountId = x.AccountId, from = x.FromNo, to = x.ToNo, active = x.Active, by = x.AddedBy, at = x.AddedAt }).ToList() : new List<object>(),
@@ -769,6 +776,44 @@ app.MapPost("/api/act", async (HttpContext ctx, AppDb db, SettingsStore ss, Noti
                 var req = await db.Users.FindAsync(c.RequesterId);
                 Log(db, s, me, "Cheque issued", c.Id, $"#{noText} · {bank.NameEn} ••{acc.Last4} · {Fmt.Money(c.PayAmt.Value, payCur)} · dated {Fmt.D(dt)} → {req?.FullName}{(c.IssueRateId != null ? $" · rate {c.IssueRateId} locked, FX difference {Fmt.Money(c.IssueFxDiff ?? 0, funcCur)}" : "")}");
                 var res = await Save(db, c.Id); await nf.Event(db, s, c, "issued", "to " + req?.FullName, me); return res;
+            }
+            // ===================== messages on a request =====================
+            case "comment":
+            {
+                var c = await Chq(db, b); if (c == null) return Err("Cheque not found.");
+                if (!A.Sees(u, c) && !A.Has("approvals", "approve") && !A.Has("approvals", "approve2") && !A.Has("issue", "issue"))
+                    return Err("You cannot write on this request.", 403);
+                var text = Str(b, "text"); if (text.Length < 1) return Err("Write the message.");
+                if (text.Length > 2000) return Err("The message is too long (2,000 characters at most).");
+                var kind = Str(b, "kind"); if (!Lists.CommentKinds.Contains(kind)) kind = "Note";
+                var to = Str(b, "to"); if (!Lists.CommentTo.Contains(to)) to = "all";
+                int? toUser = null;
+                if (to == "user")
+                {
+                    var tuId = Int(b, "toUserId");
+                    var tu = await db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.Id == tuId && x.Active);
+                    if (tu == null) return Err("Choose who the message is for.");
+                    toUser = tu.Id;
+                }
+                db.Comments.Add(new Comment
+                {
+                    ChequeId = c.Id, At = Clock.Stamp(s), ById = u.Id, ByName = Trunc(me, 150), ToKind = to, ToUserId = toUser,
+                    Stage = c.Status, Kind = kind, Text = text, ReadBy = "|" + u.Id + "|"
+                });
+                // writing on a request answers what was waiting for you there
+                foreach (var m in await db.Comments.Where(x => x.ChequeId == c.Id && x.ById != u.Id).ToListAsync())
+                    if (!(m.ReadBy ?? "").Contains("|" + u.Id + "|") && (m.ReadBy ?? "|").Length < 1900) m.ReadBy = (string.IsNullOrEmpty(m.ReadBy) ? "|" : m.ReadBy) + u.Id + "|";
+                Log(db, s, me, "Message", c.Id, $"{kind} to {to}: {(text.Length > 120 ? text[..120] + "…" : text)}");
+                return await Save(db, c.Id);
+            }
+            case "readComments":
+            {
+                var id = Str(b, "id"); if (string.IsNullOrEmpty(id)) return Err("Cheque not found.");
+                var tag = "|" + u.Id + "|";
+                foreach (var m in await db.Comments.Where(x => x.ChequeId == id && x.ById != u.Id).ToListAsync())
+                    if (!(m.ReadBy ?? "").Contains(tag) && (m.ReadBy ?? "|").Length < 1900) m.ReadBy = (string.IsNullOrEmpty(m.ReadBy) ? "|" : m.ReadBy) + u.Id + "|";
+                await db.SaveChangesAsync();
+                return Ok(new { ok = true });
             }
             case "receive":
             {
