@@ -13,7 +13,13 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 var cs = builder.Configuration.GetConnectionString("ChequeDb");
-if (string.IsNullOrWhiteSpace(cs)) throw new InvalidOperationException("Connection string 'ChequeDb' is missing. Add it in Azure App Service > Environment variables > Connection strings.");
+if (string.IsNullOrWhiteSpace(cs)) throw new InvalidOperationException("Connection string 'ChequeDb' is missing. Set the environment variable ConnectionStrings__ChequeDb on the host.");
+// Optional: the database password as its own setting (environment variable ChequeDb__Password).
+// Hosts such as MonsterASP generate passwords containing ; or = which break a pasted connection
+// string; the builder adds the password with the quoting SQL Server expects.
+var dbPassword = builder.Configuration["ChequeDb:Password"];
+if (!string.IsNullOrEmpty(dbPassword))
+    cs = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(cs) { Password = dbPassword }.ConnectionString;
 
 builder.Services.AddDbContextPool<AppDb>(o => o.UseSqlServer(cs, sql => sql.EnableRetryOnFailure(8, TimeSpan.FromSeconds(10), null)).AddInterceptors(new RlsInterceptor()));
 Sec.AddSecurity(builder);   // Kestrel limits, forwarded headers, HSTS, rate limits (Security.cs)
@@ -64,7 +70,7 @@ using (var scope = app.Services.CreateScope())
     await strategy.ExecuteAsync(async () => { await Schema.Upgrade(db, store, startLog); });
     await Rls.Install(db, startLog);   // row-level security policy in SQL Server (Rls.cs)
 
-    // One-time CFO reset: set the app setting CFO_RESET to a new value in Azure.
+    // One-time CFO reset: set the environment variable CFO_RESET to a new value on the host.
     // Clears only the CFO's sign-in and reopens the setup screen; all other data is kept.
     var rsId = (app.Configuration["CFO_RESET"] ?? "").Trim();
     if (rsId.Length > 0)

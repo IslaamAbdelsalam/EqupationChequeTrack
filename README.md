@@ -23,7 +23,7 @@ ChequeTrack follows every company cheque from the request to bank clearance. It 
 **Secrets stay on the server**
 - The Telegram bot token, SMTP password and alert-link key are read from environment variables when set (`TELEGRAM_BOT_TOKEN`, `SMTP_PASSWORD`, `CRON_KEY`). Otherwise they come from the values saved in Settings, which are encrypted with ASP.NET Data Protection.
 - The browser only ever receives "set / not set". The alert link is shown masked. The full link is returned only by `/api/secret/cron`, to Telegram or Settings admins, and each view is written to the audit log.
-- `appsettings.json` has no connection string. Put it in Azure App Service > Connection strings (`ChequeDb`).
+- `appsettings.json` has no connection string. Set it on the host as the environment variable `ConnectionStrings__ChequeDb`, with the password in `ChequeDb__Password` (see Deploy to MonsterASP.NET).
 - `.env`, `.env.*`, certificates and publish profiles are git-ignored. `.env.example` lists the variable names only.
 
 **Input validation on every API call** (`Security.cs`)
@@ -159,7 +159,19 @@ dotnet run
 
 Open the URL that is printed. On the first run, the setup screen creates the CFO account and the Management and Finance departments.
 
-## Deploy to Azure App Service
+## Deploy to MonsterASP.NET (current host)
+
+The live site is `https://equpationcheques.runasp.net` (free plan, EU datacenter, SQL Server database).
+
+1. **Website › Git deploy:** repository `https://github.com/IslaamAbdelsalam/EqupationChequeTrack.git`, branch `main`, type **Build .NET app**, project `ChequeTrack.csproj`. To release a new version, click **Pull latest**, then **Build & publish**. Automatic deploy on every push is a Premium feature.
+2. **Website › Scripting › Environment variables**, then **Restart application**:
+   - `ASPNETCORE_ENVIRONMENT` = `Production`
+   - `ConnectionStrings__ChequeDb` = `Server=<db>.databaseasp.net; Database=<db>; User Id=<db>; Encrypt=False; MultipleActiveResultSets=True;` (no password in it)
+   - `ChequeDb__Password` = the database password (Database › Overview › Password › Show, then copy). It is kept separate because MonsterASP passwords can contain `;` or `=`, which break a pasted connection string. The app adds it with the correct quoting.
+3. **Website › HTTPS:** free Let's Encrypt certificate, renewed automatically. The app itself redirects HTTP to HTTPS.
+4. The free database plan has no automatic daily backups, so take a backup regularly from **Database › Backups**.
+
+## Deploy to Azure App Service (previous host)
 
 ```bash
 dotnet publish -c Release -o out
